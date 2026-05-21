@@ -585,6 +585,34 @@ textarea:focus-visible {
 .node-header {
     padding: 10px 13px;
     border-bottom: 1px solid var(--border);
+    position: relative;
+}
+
+.node-header-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+
+.node-needs-config {
+    color: var(--warn);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: auto;
+}
+
+.node-schema-badge {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 1px 7px;
+    background: var(--bg-3);
+    border-radius: 9px;
+    font-size: 9px;
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+    color: var(--text-3);
+    letter-spacing: 0.02em;
 }
 
 .node-kind {

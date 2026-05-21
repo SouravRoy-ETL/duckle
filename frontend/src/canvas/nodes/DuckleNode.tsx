@@ -1,18 +1,50 @@
-import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
+import { useMemo } from 'react';
+import {
+    Handle,
+    Position,
+    useNodes,
+    useEdges,
+    type Node,
+    type NodeProps,
+} from '@xyflow/react';
+import { AlertCircle } from 'lucide-react';
 import type { DuckleNodeData } from '../../pipeline-types';
 import { getManifest } from '../../workflow-ui/fields/component-manifests';
 import { metaFor } from '../connection-types';
 import type { PortDef } from '../../workflow-ui/fields/types';
+import { resolveOutputSchema } from '../../schema-resolve';
 
 export type DuckleFlowNode = Node<DuckleNodeData>;
 
-export default function DuckleNode({ data, selected, type }: NodeProps<DuckleFlowNode>) {
+export default function DuckleNode({ id, data, selected, type }: NodeProps<DuckleFlowNode>) {
     const kind = type ?? 'transform';
     const manifest = getManifest(data.componentId);
     const ports = manifest?.ports;
     const inputs = ports?.inputs ?? [];
     const outputs = ports?.outputs ?? [];
     const portCount = Math.max(inputs.length, outputs.length);
+
+    const allNodes = useNodes() as Node<DuckleNodeData>[];
+    const allEdges = useEdges();
+
+    const effectiveSchema = useMemo(
+        () => resolveOutputSchema(id, allNodes, allEdges),
+        [id, allNodes, allEdges],
+    );
+
+    const needsConfig = useMemo(() => {
+        if (!manifest) return false;
+        const props = data.properties ?? {};
+        for (const section of manifest.sections) {
+            for (const field of section.fields) {
+                if (!field.required) continue;
+                const v = props[field.key];
+                if (v === undefined || v === null || v === '') return true;
+                if (Array.isArray(v) && v.length === 0) return true;
+            }
+        }
+        return false;
+    }, [manifest, data.properties]);
 
     const classes =
         'node node-' + kind +
@@ -22,9 +54,24 @@ export default function DuckleNode({ data, selected, type }: NodeProps<DuckleFlo
     return (
         <div className={classes}>
             <div className="node-header">
-                <div className="node-kind">{kind}</div>
+                <div className="node-header-row">
+                    <div className="node-kind">{kind}</div>
+                    {needsConfig ? (
+                        <span
+                            className="node-needs-config"
+                            title="Required fields missing — open the Basic tab to configure"
+                        >
+                            <AlertCircle size={12} />
+                        </span>
+                    ) : null}
+                </div>
                 <div className="node-label">{data.label}</div>
                 {data.subtitle ? <div className="node-subtitle">{data.subtitle}</div> : null}
+                {effectiveSchema.length > 0 ? (
+                    <div className="node-schema-badge">
+                        {effectiveSchema.length} col{effectiveSchema.length === 1 ? '' : 's'}
+                    </div>
+                ) : null}
                 {data.disabled ? <div className="node-disabled-badge">disabled</div> : null}
             </div>
             {portCount > 0 ? (

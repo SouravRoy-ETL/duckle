@@ -80,6 +80,7 @@ type Props = {
     onPaneAction: (action: PaneAction) => void;
     onEdgeChangeType: (edgeId: string, newType: ConnectionType) => void;
     onEdgeDelete: (edgeId: string) => void;
+    onEdgeEdit: (edgeId: string) => void;
     nodeAutodetectAvailable: (nodeId: string) => boolean;
 };
 
@@ -95,6 +96,7 @@ function CanvasInner({
     onPaneAction,
     onEdgeChangeType,
     onEdgeDelete,
+    onEdgeEdit,
     nodeAutodetectAvailable,
 }: Props) {
     const { screenToFlowPosition } = useReactFlow();
@@ -258,6 +260,15 @@ function CanvasInner({
                     key: 'header',
                     label: 'Connection · ' + edge.id.slice(0, 8),
                 },
+                {
+                    kind: 'item',
+                    key: 'edit',
+                    label: 'Edit label / condition…',
+                    icon: <Pencil size={ICON_SIZE} />,
+                    shortcut: 'Dbl-click',
+                    onClick: () => onEdgeEdit(edge.id),
+                },
+                { kind: 'separator', key: 's0' },
                 ...CONNECTION_TYPES.map((t): MenuItem => ({
                     kind: 'item',
                     key: 'type-' + t.id,
@@ -278,7 +289,7 @@ function CanvasInner({
             ];
             menu.open(e, items);
         },
-        [menu, onEdgeChangeType, onEdgeDelete],
+        [menu, onEdgeChangeType, onEdgeDelete, onEdgeEdit],
     );
 
     const handlePaneContextMenu = useCallback(
@@ -341,6 +352,7 @@ function CanvasInner({
                 onSelectionChange={onSelectionChange}
                 onNodeContextMenu={handleNodeContextMenu}
                 onEdgeContextMenu={handleEdgeContextMenu}
+                onEdgeDoubleClick={(_, edge) => onEdgeEdit(edge.id)}
                 onPaneContextMenu={handlePaneContextMenu}
                 nodeTypes={nodeTypes}
                 edgeTypes={edgeTypes}

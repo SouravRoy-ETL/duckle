@@ -36,6 +36,7 @@ type Props = {
     onPaneAction: (action: PaneAction) => void;
     onEdgeChangeType: (edgeId: string, newType: ConnectionType) => void;
     onEdgeDelete: (edgeId: string) => void;
+    onEdgeEdit: (edgeId: string) => void;
     nodeAutodetectAvailable: (nodeId: string) => boolean;
 };
 
@@ -52,6 +53,7 @@ export default function EditorTabs({
     onPaneAction,
     onEdgeChangeType,
     onEdgeDelete,
+    onEdgeEdit,
     nodeAutodetectAvailable,
 }: Props) {
     const [active, setActive] = useState<TabId>('canvas');
@@ -86,6 +88,7 @@ export default function EditorTabs({
                         onPaneAction={onPaneAction}
                         onEdgeChangeType={onEdgeChangeType}
                         onEdgeDelete={onEdgeDelete}
+                        onEdgeEdit={onEdgeEdit}
                         nodeAutodetectAvailable={nodeAutodetectAvailable}
                     />
                 </div>

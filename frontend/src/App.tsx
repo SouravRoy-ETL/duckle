@@ -20,6 +20,7 @@ import PropertiesPanel from './workflow-ui/PropertiesPanel';
 import BottomPanel from './workflow-ui/BottomPanel';
 import StatusBar from './workflow-ui/StatusBar';
 import NewPipelineModal, { type PipelineTemplate } from './workflow-ui/NewPipelineModal';
+import EdgeEditorModal from './canvas/EdgeEditorModal';
 import type { ComponentDef, NodeKind as PaletteKind } from './workflow-ui/palette-data';
 import { getDefaults, getManifest } from './workflow-ui/fields/component-manifests';
 import type { DuckleNodeData } from './pipeline-types';
@@ -265,6 +266,41 @@ export default function App() {
             markDirty();
         },
         [setEdges, markDirty],
+    );
+
+    const [editingEdgeId, setEditingEdgeId] = useState<string | null>(null);
+    const editingEdge = useMemo(
+        () => (editingEdgeId ? edges.find(e => e.id === editingEdgeId) ?? null : null),
+        [editingEdgeId, edges],
+    );
+
+    const handleEdgeEdit = useCallback((edgeId: string) => {
+        setEditingEdgeId(edgeId);
+    }, []);
+
+    const handleEdgeEditSave = useCallback(
+        (patch: { label?: string; condition?: string }) => {
+            if (!editingEdgeId) return;
+            setEdges(es =>
+                es.map(e =>
+                    e.id === editingEdgeId
+                        ? {
+                              ...e,
+                              data: {
+                                  ...(e.data ?? {}),
+                                  ...(patch.label !== undefined ? { label: patch.label } : {}),
+                                  ...(patch.condition !== undefined
+                                      ? { condition: patch.condition }
+                                      : {}),
+                              },
+                          }
+                        : e,
+                ),
+            );
+            setEditingEdgeId(null);
+            markDirty();
+        },
+        [editingEdgeId, setEdges, markDirty],
     );
 
     const handleSelectionChange = useCallback((params: OnSelectionChangeParams) => {
@@ -633,6 +669,7 @@ export default function App() {
                         onPaneAction={handlePaneAction}
                         onEdgeChangeType={handleEdgeChangeType}
                         onEdgeDelete={handleEdgeDelete}
+                        onEdgeEdit={handleEdgeEdit}
                         nodeAutodetectAvailable={nodeAutodetectAvailable}
                     />
                 </section>
@@ -663,6 +700,14 @@ export default function App() {
                 }
                 onCreate={handleCreatePipeline}
             />
+
+            {editingEdge ? (
+                <EdgeEditorModal
+                    edge={editingEdge}
+                    onSave={handleEdgeEditSave}
+                    onCancel={() => setEditingEdgeId(null)}
+                />
+            ) : null}
         </div>
     );
 }
