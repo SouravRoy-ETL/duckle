@@ -12,6 +12,7 @@ import { ExpressionField } from './ExpressionField';
 import { ColumnField, ColumnsField } from './ColumnField';
 import { AggregationsField } from './AggregationsField';
 import { KeyValueField } from './KeyValueField';
+import { FilterBuilderField } from './FilterBuilderField';
 
 type Props = {
     field: Field;
@@ -78,6 +79,8 @@ function renderInput(field: Field, value: unknown, onChange: (v: unknown) => voi
                     onChange={onChange}
                 />
             );
+        case 'filter-predicate':
+            return <FilterBuilderField value={value} onChange={onChange} />;
         case 'column':
             return (
                 <ColumnField field={field} value={value as string | undefined} onChange={onChange} />

@@ -11,6 +11,7 @@ export type FieldKind =
     | 'file-path'
     | 'save-path'
     | 'expression'
+    | 'filter-predicate'
     | 'column'
     | 'columns'
     | 'aggregations'

@@ -323,12 +323,10 @@ export const MANIFESTS: Record<string, ComponentManifest> = {
                     {
                         key: 'predicate',
                         label: 'Predicate',
-                        kind: 'expression',
+                        kind: 'filter-predicate',
                         required: true,
-                        rows: 4,
-                        placeholder: "status = 'paid' AND amount > 100",
                         description:
-                            'SQL boolean expression evaluated per row. Rows where the predicate is true are kept.',
+                            'Visual builder with column / operator / value, or raw SQL. Rows where the predicate is true are kept.',
                     },
                     {
                         key: 'rejectOnError',
