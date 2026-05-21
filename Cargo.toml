@@ -68,6 +68,7 @@ parquet = "53"
 # Storage
 rusqlite = { version = "0.32", features = ["bundled"] }
 duckdb = "1.1"
+encoding_rs = "0.8"
 
 # Tauri (used by apps/desktop)
 tauri = { version = "2", features = [] }

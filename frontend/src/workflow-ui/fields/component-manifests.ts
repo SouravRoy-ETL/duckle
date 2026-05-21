@@ -59,14 +59,25 @@ function realOrMockAutodetect(
     mockRows: Record<string, unknown>[] = [],
 ): AutodetectFn {
     return async (props: Record<string, unknown>) => {
-        const path = typeof props.path === 'string' ? props.path.trim() : '';
-        if (path) {
+        // Different connectors carry the "where to look" key under
+        // different names. Treat any non-empty location as a signal to
+        // hit the real Rust path.
+        const hasLocation =
+            stringy(props.path) ||
+            stringy(props.database) ||
+            stringy(props.url) ||
+            stringy(props.host);
+        if (hasLocation) {
             const real = await tauriAutodetect(format, props);
             if (real) return { columns: real.columns, sampleRows: real.sampleRows };
         }
         await new Promise(r => setTimeout(r, 250));
         return { columns: mockColumns, sampleRows: mockRows };
     };
+}
+
+function stringy(v: unknown): boolean {
+    return typeof v === 'string' && v.trim().length > 0;
 }
 
 export const MANIFESTS: Record<string, ComponentManifest> = {
@@ -159,7 +170,7 @@ export const MANIFESTS: Record<string, ComponentManifest> = {
         label: 'Parquet',
         description: 'Read columnar Parquet files.',
         schemaSource: 'autodetect',
-        autodetect: mockAutodetect(PARQUET_SAMPLE_SCHEMA, PARQUET_SAMPLE_ROWS),
+        autodetect: realOrMockAutodetect('parquet', PARQUET_SAMPLE_SCHEMA, PARQUET_SAMPLE_ROWS),
         sections: [
             {
                 label: 'Source file',
@@ -198,7 +209,7 @@ export const MANIFESTS: Record<string, ComponentManifest> = {
         label: 'SQLite',
         description: 'Read from a SQLite database file.',
         schemaSource: 'autodetect',
-        autodetect: mockAutodetect(SQLITE_SAMPLE_SCHEMA),
+        autodetect: realOrMockAutodetect('sqlite', SQLITE_SAMPLE_SCHEMA),
         sections: [
             {
                 label: 'Connection',
@@ -252,7 +263,7 @@ export const MANIFESTS: Record<string, ComponentManifest> = {
         label: 'DuckDB',
         description: 'Read from a DuckDB database file.',
         schemaSource: 'autodetect',
-        autodetect: mockAutodetect(CSV_SAMPLE_SCHEMA),
+        autodetect: realOrMockAutodetect('duckdb', CSV_SAMPLE_SCHEMA),
         sections: [
             {
                 label: 'Connection',
@@ -291,7 +302,7 @@ export const MANIFESTS: Record<string, ComponentManifest> = {
         label: 'JSON',
         description: 'Read JSON or NDJSON files.',
         schemaSource: 'autodetect',
-        autodetect: mockAutodetect(JSON_SAMPLE_SCHEMA),
+        autodetect: realOrMockAutodetect('json', JSON_SAMPLE_SCHEMA),
         sections: [
             {
                 label: 'Source file',
