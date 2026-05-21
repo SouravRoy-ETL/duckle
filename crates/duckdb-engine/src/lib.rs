@@ -68,9 +68,14 @@ impl DuckdbEngine {
     /// runs don't trample each other.
     pub fn new() -> Result<Self, EngineError> {
         let conn = Connection::open_in_memory()?;
-        // Best-effort: load extensions we use lazily.
+        // Best-effort: load extensions we use lazily. These are all
+        // optional — sqlite for sqlite_scan, json for read_json_auto,
+        // httpfs for http/https/s3 URIs in any of the file readers.
+        // Cloud-specific ones (azure, etc.) install on demand from the
+        // `inspect_cloud` path the first time they're needed.
         let _ = conn.execute_batch("INSTALL sqlite; LOAD sqlite;");
         let _ = conn.execute_batch("INSTALL json; LOAD json;");
+        let _ = conn.execute_batch("INSTALL httpfs; LOAD httpfs;");
         let interrupt = conn.interrupt_handle();
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -112,11 +117,88 @@ impl DuckdbEngine {
             "json" | "jsonl" | "ndjson" => self.inspect_json(options),
             "sqlite" => self.inspect_sqlite(options),
             "duckdb" => self.inspect_duckdb(options),
+            "s3" | "gcs" | "azureblob" | "http" | "https" => {
+                self.inspect_cloud_url(format, options)
+            }
             other => Err(EngineError::Unsupported(format!(
                 "Format '{}' is not supported by the DuckDB engine yet",
                 other
             ))),
         }
+    }
+
+    /// Cloud / HTTP URL inspector. Routes by the URL's file extension
+    /// to the matching DuckDB reader. Installs the right extensions
+    /// lazily (azure needs the azure extension; gcs/s3 work through
+    /// httpfs). Credentials come from environment variables for now
+    /// (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY for s3, etc.);
+    /// CREATE SECRET integration with saved connections lands later.
+    fn inspect_cloud_url(
+        &self,
+        format: &str,
+        options: JsonValue,
+    ) -> Result<Inspection, EngineError> {
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Opts {
+            #[serde(default)]
+            path: Option<String>,
+            #[serde(default)]
+            url: Option<String>,
+            #[serde(default)]
+            bucket: Option<String>,
+            #[serde(default)]
+            key: Option<String>,
+            #[serde(default)]
+            format: Option<String>,
+        }
+        let opts: Opts =
+            serde_json::from_value(options.clone()).map_err(|e| EngineError::Config(e.to_string()))?;
+        let url = opts
+            .path
+            .or(opts.url)
+            .or_else(|| match (opts.bucket, opts.key) {
+                (Some(b), Some(k)) => {
+                    let scheme = match format {
+                        "s3" => "s3://",
+                        "gcs" => "gs://",
+                        "azureblob" => "az://",
+                        _ => "https://",
+                    };
+                    Some(format!("{}{}/{}", scheme, b, k.trim_start_matches('/')))
+                }
+                _ => None,
+            })
+            .ok_or_else(|| {
+                EngineError::Config("Cloud source needs a path / URL".into())
+            })?;
+
+        // Lazily install Azure extension if needed.
+        if format == "azureblob" {
+            self.with_connection(|conn| {
+                let _ = conn.execute_batch("INSTALL azure; LOAD azure;");
+            });
+        }
+
+        // Infer file format from URL extension if user didn't specify.
+        let lower = url.to_ascii_lowercase();
+        let chosen = opts.format.as_deref().map(str::to_string).unwrap_or_else(|| {
+            if lower.ends_with(".parquet") || lower.ends_with(".pq") {
+                "parquet".into()
+            } else if lower.ends_with(".json") || lower.ends_with(".jsonl") || lower.ends_with(".ndjson") {
+                "json".into()
+            } else if lower.ends_with(".tsv") {
+                "tsv".into()
+            } else {
+                "csv".into()
+            }
+        });
+
+        let mut new_options = options;
+        if let Some(obj) = new_options.as_object_mut() {
+            obj.insert("path".into(), JsonValue::String(url));
+        }
+        self.inspect(&chosen, new_options)
     }
 
     fn inspect_csv(&self, options: JsonValue) -> Result<Inspection, EngineError> {

@@ -325,6 +325,9 @@ fn build_view_sql(
         "src.json" | "src.jsonl" => Ok(build_json_source(props)),
         "src.sqlite" => Ok(build_sqlite_source(props)),
         "src.duckdb" => Ok(build_duckdb_source(props)),
+        "src.s3" | "src.gcs" | "src.azureblob" | "src.http" => {
+            Ok(build_cloud_source(props))
+        }
         // Pass-through transforms
         "xf.filter" => build_filter(inputs, props),
         "xf.project" => build_project(inputs, props),
@@ -844,6 +847,44 @@ fn build_duckdb_source(props: &JsonValue) -> String {
     // we just produce a SELECT that references the attached schema.
     let sql = string_prop(props, "sql").unwrap_or_else(|| "SELECT 1 AS placeholder".into());
     format!("SELECT * FROM ({})", sql)
+}
+
+/// Cloud sources (S3 / GCS / Azure Blob / HTTP). DuckDB's httpfs +
+/// azure extensions let us read these directly via the same
+/// read_csv_auto / read_parquet / read_json_auto family of functions.
+/// Format is inferred from the URL extension unless the user picks one.
+fn build_cloud_source(props: &JsonValue) -> String {
+    let path = string_prop(props, "path")
+        .or_else(|| string_prop(props, "url"))
+        .unwrap_or_default();
+    let override_fmt = string_prop(props, "format");
+    let lower = path.to_ascii_lowercase();
+    let chosen = override_fmt.filter(|s| !s.is_empty()).unwrap_or_else(|| {
+        if lower.ends_with(".parquet") || lower.ends_with(".pq") {
+            "parquet".into()
+        } else if lower.ends_with(".json")
+            || lower.ends_with(".jsonl")
+            || lower.ends_with(".ndjson")
+        {
+            "json".into()
+        } else if lower.ends_with(".tsv") {
+            "tsv".into()
+        } else {
+            "csv".into()
+        }
+    });
+    match chosen.as_str() {
+        "parquet" => format!("SELECT * FROM read_parquet('{}')", sql_escape(&path)),
+        "json" => format!("SELECT * FROM read_json_auto('{}')", sql_escape(&path)),
+        "tsv" => format!(
+            "SELECT * FROM read_csv_auto('{}', header=true, delim='\\t')",
+            sql_escape(&path)
+        ),
+        _ => format!(
+            "SELECT * FROM read_csv_auto('{}', header=true)",
+            sql_escape(&path)
+        ),
+    }
 }
 
 // ---- Sinks --------------------------------------------------------------

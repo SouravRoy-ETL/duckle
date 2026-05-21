@@ -10,6 +10,7 @@ import {
     Plus,
     Save,
     Square,
+    Upload,
     Workflow,
     X,
 } from 'lucide-react';
@@ -35,6 +36,7 @@ type Props = {
     onCopySql: () => void;
     onExportJson: () => void;
     onExportSqlFile: () => void;
+    onImportJson: () => void;
 };
 
 export default function EditorHeader({
@@ -52,6 +54,7 @@ export default function EditorHeader({
     onCopySql,
     onExportJson,
     onExportSqlFile,
+    onImportJson,
 }: Props) {
     const [moreOpen, setMoreOpen] = useState(false);
     const moreRef = useRef<HTMLDivElement>(null);
@@ -236,6 +239,20 @@ export default function EditorHeader({
                                     <div>Export as .duckle.json</div>
                                     <div className="toolbar-more-desc">
                                         Download nodes + edges as portable JSON
+                                    </div>
+                                </div>
+                            </button>
+                            <button
+                                type="button"
+                                role="menuitem"
+                                className="toolbar-more-item"
+                                onClick={fire(onImportJson)}
+                            >
+                                <Upload size={13} />
+                                <div>
+                                    <div>Import .duckle.json…</div>
+                                    <div className="toolbar-more-desc">
+                                        Open a portable JSON as a new pipeline
                                     </div>
                                 </div>
                             </button>

@@ -818,6 +818,93 @@ export default function App() {
         );
     }, [nodes, edges, activeJobName, downloadFile]);
 
+    const uniquePipelineName = useCallback(
+        (base: string): string => {
+            const taken = new Set(repo.filter(r => r.type === 'pipeline').map(r => r.name));
+            if (!taken.has(base)) return base;
+            for (let i = 2; i < 1000; i++) {
+                const candidate = `${base}_${i}`;
+                if (!taken.has(candidate)) return candidate;
+            }
+            return `${base}_${Date.now()}`;
+        },
+        [repo],
+    );
+
+    const importFromText = useCallback(
+        (text: string, suggestedName: string) => {
+            let parsed: { name?: string; nodes?: unknown; edges?: unknown };
+            try {
+                parsed = JSON.parse(text);
+            } catch (err) {
+                console.error('Pipeline import: invalid JSON', err);
+                return;
+            }
+            const importedNodes = parsed.nodes;
+            if (!Array.isArray(importedNodes) || importedNodes.length === 0) {
+                console.error('Pipeline import: missing or empty nodes array');
+                return;
+            }
+            const importedEdges = Array.isArray(parsed.edges) ? parsed.edges : [];
+            const id = freshId('p');
+            const baseName =
+                (typeof parsed.name === 'string' && parsed.name.trim()) ||
+                suggestedName.replace(/\.duckle\.json$|\.json$/, '') ||
+                'imported_pipeline';
+            const name = uniquePipelineName(baseName);
+            const parent = repo.find(i => i.id === 'pipelines')
+                ? 'pipelines'
+                : repo.find(i => i.type === 'folder')?.id ?? 'root';
+            setRepo(r => [...r, { id, name, type: 'pipeline', parentId: parent }]);
+            setPipelineData(d => ({
+                ...d,
+                [id]: {
+                    nodes: importedNodes as PipelineState['nodes'],
+                    edges: importedEdges as PipelineState['edges'],
+                },
+            }));
+            setJobs(js =>
+                js.find(j => j.id === id) ? js : [...js, { id, name, dirty: false }],
+            );
+            setActiveJobId(id);
+        },
+        [repo],
+    );
+
+    const handleImportJson = useCallback(async () => {
+        if (isInTauri()) {
+            try {
+                const { open } = await import('@tauri-apps/plugin-dialog');
+                const { readTextFile } = await import('@tauri-apps/plugin-fs');
+                const picked = await open({
+                    multiple: false,
+                    filters: [
+                        { name: 'Duckle pipeline', extensions: ['json', 'duckle.json'] },
+                        { name: 'All files', extensions: ['*'] },
+                    ],
+                });
+                if (typeof picked !== 'string') return;
+                const content = await readTextFile(picked);
+                const filename = picked.split(/[\\/]/).pop() ?? 'imported.json';
+                importFromText(content, filename);
+            } catch (err) {
+                console.error('Pipeline import (Tauri) failed', err);
+            }
+            return;
+        }
+        // Browser fallback — file input.
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,.duckle.json,application/json';
+        input.onchange = async () => {
+            const file = input.files?.[0];
+            if (!file) return;
+            const content = await file.text();
+            importFromText(content, file.name);
+        };
+        input.click();
+    }, [importFromText]);
+
     const handleAutoLayout = useCallback(() => {
         setNodes(ns =>
             ns.map((n, i) => ({
@@ -1261,6 +1348,7 @@ export default function App() {
                         onCopySql={handleCopySql}
                         onExportJson={handleExportJson}
                         onExportSqlFile={handleExportSql}
+                        onImportJson={handleImportJson}
                     />
                     <EditorTabs
                         engine={engine}

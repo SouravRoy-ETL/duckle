@@ -251,6 +251,48 @@ export const MANIFESTS: Record<string, ComponentManifest> = {
         ],
     },
 
+    'src.s3': {
+        id: 'src.s3',
+        kind: 'source',
+        label: 'Amazon S3',
+        description: 'Read CSV / Parquet / JSON from an s3:// URI via DuckDB httpfs.',
+        schemaSource: 'autodetect',
+        autodetect: realOrMockAutodetect('s3', CSV_SAMPLE_SCHEMA),
+        sections: [
+            {
+                label: 'Source',
+                fields: [
+                    {
+                        key: 'path',
+                        label: 'S3 URI',
+                        kind: 'text',
+                        required: true,
+                        placeholder: 's3://bucket/path/to/file.parquet',
+                        description: 'Full S3 URI. File format is inferred from the extension.',
+                    },
+                    {
+                        key: 'connectionRef',
+                        label: 'Or use saved connection',
+                        kind: 'connection-ref',
+                        accepts: ['s3'],
+                    },
+                    {
+                        key: 'format',
+                        label: 'Format override',
+                        kind: 'select',
+                        options: [
+                            { label: 'Auto-detect from extension', value: '' },
+                            { label: 'CSV', value: 'csv' },
+                            { label: 'Parquet', value: 'parquet' },
+                            { label: 'JSON', value: 'json' },
+                        ],
+                    },
+                ],
+            },
+        ],
+        ports: { inputs: [], outputs: [{ id: 'main', label: 'out', type: 'main' }] },
+    },
+
     'src.duckdb': {
         id: 'src.duckdb',
         kind: 'source',
