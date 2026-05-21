@@ -19,6 +19,14 @@ import EngineSelector, { type EngineId } from './workflow-ui/EngineSelector';
 import { useTheme } from './theme';
 import { loadPersisted, savePersisted } from './persistence';
 import { resolveOutputSchema } from './schema-resolve';
+import WorkspacePickerModal from './workflow-ui/WorkspacePickerModal';
+import {
+    getWorkspacePath,
+    isInTauri,
+    loadWorkspace,
+    saveWorkspace,
+    setWorkspacePath,
+} from './workspace';
 import LeftSidebar from './workflow-ui/LeftSidebar';
 import PropertiesPanel from './workflow-ui/PropertiesPanel';
 import BottomPanel from './workflow-ui/BottomPanel';
@@ -174,6 +182,14 @@ export default function App() {
     const [isRunning, setIsRunning] = useState<boolean>(false);
     const [renameRequest, setRenameRequest] = useState<number>(0);
     const [repo, setRepo] = useState<RepoItem[]>(() => loadPersisted('repo', INITIAL_REPO));
+
+    const [workspacePathState, setWorkspacePathState] = useState<string | null>(() =>
+        getWorkspacePath(),
+    );
+    // In Tauri: needs workspace picked + hydrated before saves start.
+    // In browser: workspaceReady is always true; localStorage persists.
+    const [workspaceReady, setWorkspaceReady] = useState<boolean>(!isInTauri());
+    const showWorkspacePicker = isInTauri() && !workspacePathState;
     const [newPipelineModal, setNewPipelineModal] = useState<{
         open: boolean;
         defaultParent: string;
@@ -183,29 +199,66 @@ export default function App() {
     const nodes = activePipeline.nodes;
     const edges = activePipeline.edges;
 
-    // Persist core state to localStorage (debounced).
+    // Hydrate from workspace file on Tauri once the path is known.
     useEffect(() => {
-        const t = setTimeout(() => savePersisted('pipelines', pipelineData), 250);
-        return () => clearTimeout(t);
-    }, [pipelineData]);
+        if (!isInTauri() || !workspacePathState) return;
+        let cancelled = false;
+        loadWorkspace(workspacePathState).then(state => {
+            if (cancelled) return;
+            if (state) {
+                if (state.engine) setEngine(state.engine as EngineId);
+                if (state.pipelineData)
+                    setPipelineData(state.pipelineData as Record<string, PipelineState>);
+                if (state.repo) setRepo(state.repo as RepoItem[]);
+                if (state.jobs) setJobs(state.jobs as Job[]);
+                if (state.activeJobId) setActiveJobId(state.activeJobId);
+            }
+            setWorkspaceReady(true);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [workspacePathState]);
 
+    // Tauri: save to disk (debounced). Browser: save to localStorage.
     useEffect(() => {
-        const t = setTimeout(() => savePersisted('repo', repo), 250);
-        return () => clearTimeout(t);
-    }, [repo]);
+        if (!workspaceReady) return;
+        if (isInTauri() && workspacePathState) {
+            const t = setTimeout(() => {
+                void saveWorkspace(workspacePathState, {
+                    version: 1,
+                    engine,
+                    pipelineData: pipelineData as unknown as Record<string, unknown>,
+                    repo: repo as unknown[],
+                    jobs: jobs as unknown[],
+                    activeJobId,
+                });
+            }, 500);
+            return () => clearTimeout(t);
+        } else {
+            const t = setTimeout(() => {
+                savePersisted('pipelines', pipelineData);
+                savePersisted('repo', repo);
+                savePersisted('jobs', jobs);
+                savePersisted('active-job', activeJobId);
+                savePersisted('engine', engine);
+            }, 250);
+            return () => clearTimeout(t);
+        }
+    }, [
+        workspaceReady,
+        workspacePathState,
+        pipelineData,
+        repo,
+        jobs,
+        activeJobId,
+        engine,
+    ]);
 
-    useEffect(() => {
-        const t = setTimeout(() => savePersisted('jobs', jobs), 250);
-        return () => clearTimeout(t);
-    }, [jobs]);
-
-    useEffect(() => {
-        savePersisted('active-job', activeJobId);
-    }, [activeJobId]);
-
-    useEffect(() => {
-        savePersisted('engine', engine);
-    }, [engine]);
+    const handlePickedWorkspace = useCallback((path: string) => {
+        setWorkspacePath(path);
+        setWorkspacePathState(path);
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
@@ -952,6 +1005,10 @@ export default function App() {
                 }
                 onCreate={handleCreatePipeline}
             />
+
+            {showWorkspacePicker ? (
+                <WorkspacePickerModal onPicked={handlePickedWorkspace} />
+            ) : null}
 
             {editingEdge ? (
                 <EdgeEditorModal
