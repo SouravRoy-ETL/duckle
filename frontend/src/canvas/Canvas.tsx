@@ -28,9 +28,7 @@ import {
     Sparkles,
     Trash2,
 } from 'lucide-react';
-import SourceNode from './nodes/SourceNode';
-import TransformNode from './nodes/TransformNode';
-import SinkNode from './nodes/SinkNode';
+import DuckleNode from './nodes/DuckleNode';
 import DuckleEdge from './DuckleEdge';
 import ConnectionTypePicker from './ConnectionTypePicker';
 import { CONNECTION_TYPES, type ConnectionType } from './connection-types';
@@ -41,9 +39,9 @@ import { useContextMenu, type MenuItem } from '../workflow-ui/ContextMenu';
 const ICON_SIZE = 14;
 
 const nodeTypes = {
-    source: SourceNode,
-    transform: TransformNode,
-    sink: SinkNode,
+    source: DuckleNode,
+    transform: DuckleNode,
+    sink: DuckleNode,
 };
 
 const edgeTypes = {

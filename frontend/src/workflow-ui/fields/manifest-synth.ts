@@ -3,6 +3,7 @@ import type {
     ComponentManifest,
     Field,
     FormSection,
+    NodePorts,
     SchemaSource,
     AutodetectResult,
 } from './types';
@@ -213,6 +214,160 @@ function base(
         schemaSource,
         autodetect: schemaSource === 'autodetect' ? placeholderAutodetect() : undefined,
         sections,
+        ports: portsForComponent(comp),
+    };
+}
+
+// Port topology per component ----------------------------------------------
+
+const MAIN_IN: NodePorts['inputs'][number] = { id: 'main', label: 'main', type: 'main' };
+const MAIN_OUT: NodePorts['outputs'][number] = { id: 'main', label: 'main', type: 'main' };
+const REJECT_OUT: NodePorts['outputs'][number] = {
+    id: 'reject',
+    label: 'reject',
+    type: 'reject',
+    optional: true,
+};
+const REJECT_IN: NodePorts['inputs'][number] = {
+    id: 'reject',
+    label: 'reject',
+    type: 'reject',
+    optional: true,
+};
+
+export function portsForComponent(comp: ComponentDef): NodePorts {
+    const id = comp.id;
+
+    // tMap — 1 main input, up to 3 lookup inputs, main + reject outputs
+    if (id === 'xf.map') {
+        return {
+            inputs: [
+                MAIN_IN,
+                { id: 'lookup_1', label: 'lookup_1', type: 'lookup', optional: true },
+                { id: 'lookup_2', label: 'lookup_2', type: 'lookup', optional: true },
+                { id: 'lookup_3', label: 'lookup_3', type: 'lookup', optional: true },
+            ],
+            outputs: [MAIN_OUT, REJECT_OUT],
+        };
+    }
+
+    // tFilterRow-style: main input, pass output, filtered output, reject output
+    if (id === 'xf.filter') {
+        return {
+            inputs: [MAIN_IN],
+            outputs: [
+                { id: 'main', label: 'pass', type: 'main' },
+                { id: 'filter', label: 'reject', type: 'filter' },
+                { id: 'reject', label: 'errors', type: 'reject', optional: true },
+            ],
+        };
+    }
+
+    // Joins: driving + lookup inputs, matched + unmatched outputs
+    if (id.startsWith('xf.join.') || id === 'xf.lookup' || id === 'xf.semi' || id === 'xf.anti') {
+        return {
+            inputs: [
+                { id: 'main', label: 'driving', type: 'main' },
+                { id: 'lookup', label: 'lookup', type: 'lookup' },
+            ],
+            outputs: [
+                { id: 'main', label: 'matched', type: 'main' },
+                { id: 'reject', label: 'unmatched', type: 'reject', optional: true },
+            ],
+        };
+    }
+
+    // Replicate — one in, multiple outs
+    if (id === 'ctl.replicate') {
+        return {
+            inputs: [MAIN_IN],
+            outputs: [
+                { id: 'main_1', label: 'main 1', type: 'main' },
+                { id: 'main_2', label: 'main 2', type: 'main' },
+                { id: 'main_3', label: 'main 3', type: 'main', optional: true },
+            ],
+        };
+    }
+
+    // Switch — one in, conditional outs + else
+    if (id === 'ctl.switch') {
+        return {
+            inputs: [MAIN_IN],
+            outputs: [
+                { id: 'case_1', label: 'case 1', type: 'main' },
+                { id: 'case_2', label: 'case 2', type: 'main' },
+                { id: 'case_3', label: 'case 3', type: 'main', optional: true },
+                { id: 'default', label: 'else', type: 'main' },
+            ],
+        };
+    }
+
+    // Set operations — multiple inputs, one output
+    if (id === 'xf.union' || id === 'xf.unionall' || id === 'xf.intersect' || id === 'xf.except') {
+        return {
+            inputs: [
+                { id: 'main_1', label: 'left', type: 'main' },
+                { id: 'main_2', label: 'right', type: 'main' },
+                { id: 'main_3', label: 'extra', type: 'main', optional: true },
+            ],
+            outputs: [MAIN_OUT],
+        };
+    }
+
+    // Iterate / foreach — emits per-row iteration
+    if (id === 'ctl.iterate' || id === 'ctl.foreach') {
+        return {
+            inputs: [MAIN_IN],
+            outputs: [{ id: 'iterate', label: 'iterate', type: 'iterate' }],
+        };
+    }
+
+    // Quality validators — pass + reject
+    if (comp.kind === 'quality') {
+        return {
+            inputs: [MAIN_IN],
+            outputs: [
+                { id: 'main', label: 'pass', type: 'main' },
+                { id: 'reject', label: 'reject', type: 'reject' },
+            ],
+        };
+    }
+
+    // CDC components — changed rows out + reject + optional unchanged
+    if (id.startsWith('xf.cdc.')) {
+        return {
+            inputs: [
+                { id: 'main', label: 'new', type: 'main' },
+                { id: 'lookup', label: 'previous', type: 'lookup' },
+            ],
+            outputs: [
+                { id: 'main', label: 'changed', type: 'main' },
+                { id: 'filter', label: 'unchanged', type: 'filter', optional: true },
+                REJECT_OUT,
+            ],
+        };
+    }
+
+    // Sources: outputs only
+    if (comp.kind === 'source') {
+        return {
+            inputs: [],
+            outputs: [MAIN_OUT, REJECT_OUT],
+        };
+    }
+
+    // Sinks: inputs only
+    if (comp.kind === 'sink') {
+        return {
+            inputs: [MAIN_IN, REJECT_IN],
+            outputs: [],
+        };
+    }
+
+    // Default transform / control / quality / custom: main in, main out, optional reject
+    return {
+        inputs: [MAIN_IN],
+        outputs: [MAIN_OUT, REJECT_OUT],
     };
 }
 

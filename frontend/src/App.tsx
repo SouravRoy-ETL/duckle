@@ -74,8 +74,24 @@ const SAMPLE_NODES: Node<DuckleNodeData>[] = [
 ];
 
 const SAMPLE_EDGES: Edge[] = [
-    { id: 'e1', source: 's1', target: 't1', type: 'duckle', data: { connectionType: 'main' } },
-    { id: 'e2', source: 't1', target: 'k1', type: 'duckle', data: { connectionType: 'main' } },
+    {
+        id: 'e1',
+        source: 's1',
+        sourceHandle: 'main',
+        target: 't1',
+        targetHandle: 'main',
+        type: 'duckle',
+        data: { connectionType: 'main' },
+    },
+    {
+        id: 'e2',
+        source: 't1',
+        sourceHandle: 'main',
+        target: 'k1',
+        targetHandle: 'main',
+        type: 'duckle',
+        data: { connectionType: 'main' },
+    },
 ];
 
 const INITIAL_JOBS: Job[] = [{ id: 'j1', name: 'orders_etl', dirty: false }];

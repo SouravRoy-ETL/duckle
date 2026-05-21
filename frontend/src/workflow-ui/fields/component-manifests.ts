@@ -1,6 +1,7 @@
 import type { ComponentManifest, AutodetectResult } from './types';
 import type { Column } from '../../pipeline-types';
-import { synthesizeManifest } from './manifest-synth';
+import { synthesizeManifest, portsForComponent } from './manifest-synth';
+import { PALETTE } from '../palette-data';
 
 const CSV_SAMPLE_SCHEMA: Column[] = [
     { name: 'order_id', type: 'int64', nullable: false, primaryKey: true },
@@ -722,7 +723,19 @@ export const MANIFESTS: Record<string, ComponentManifest> = {
 
 export function getManifest(componentId: string | undefined): ComponentManifest | undefined {
     if (!componentId) return undefined;
-    return MANIFESTS[componentId] ?? synthesizeManifest(componentId);
+    const m = MANIFESTS[componentId] ?? synthesizeManifest(componentId);
+    if (m && !m.ports) {
+        for (const cat of PALETTE) {
+            for (const grp of cat.groups) {
+                for (const c of grp.components) {
+                    if (c.id === componentId) {
+                        return { ...m, ports: portsForComponent(c) };
+                    }
+                }
+            }
+        }
+    }
+    return m;
 }
 
 export function getDefaults(manifest: ComponentManifest): Record<string, unknown> {

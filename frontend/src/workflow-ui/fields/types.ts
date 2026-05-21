@@ -1,5 +1,6 @@
 import type { FileFilter } from '../../tauri-dialog';
 import type { Column, NodeKind } from '../../pipeline-types';
+import type { ConnectionType } from '../../canvas/connection-types';
 
 export type FieldKind =
     | 'text'
@@ -47,6 +48,18 @@ export type AutodetectResult = {
     sampleRows?: Record<string, unknown>[];
 };
 
+export type PortDef = {
+    id: string;
+    label: string;
+    type: ConnectionType;
+    optional?: boolean;
+};
+
+export type NodePorts = {
+    inputs: PortDef[];
+    outputs: PortDef[];
+};
+
 export type ComponentManifest = {
     id: string;
     kind: NodeKind;
@@ -55,6 +68,7 @@ export type ComponentManifest = {
     sections: FormSection[];
     schemaSource: SchemaSource;
     autodetect?: () => Promise<AutodetectResult>;
+    ports?: NodePorts;
 };
 
 export type AggregationFunction =
