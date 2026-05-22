@@ -216,6 +216,29 @@ textarea:focus-visible {
     background: var(--bg-4);
 }
 
+/* Engine option: coming-soon (disabled) -------------------------------- */
+.engine-option.is-coming-soon {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.engine-option.is-coming-soon:hover {
+    background: transparent;
+}
+
+.engine-option-soon {
+    margin-left: 8px;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    color: var(--text-3);
+    background: var(--bg-3);
+    padding: 1px 6px;
+    border-radius: 999px;
+    vertical-align: middle;
+}
+
 .topbar::after {
     content: '';
     position: absolute;

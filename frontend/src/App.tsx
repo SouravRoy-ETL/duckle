@@ -774,6 +774,13 @@ export default function App() {
         return m;
     }, [nodes]);
 
+    // Terminal nodes = nothing downstream. The Output panel previews only
+    // these (the pipeline's actual results), not every intermediate stage.
+    const terminalNodeIds = useMemo(() => {
+        const sources = new Set(edges.map(e => e.source));
+        return nodes.filter(n => !sources.has(n.id)).map(n => n.id);
+    }, [nodes, edges]);
+
     const handleSave = useCallback(() => {
         setJobs(js => js.map(j => (j.id === activeJobId ? { ...j, dirty: false } : j)));
     }, [activeJobId]);
@@ -1431,6 +1438,7 @@ export default function App() {
                 runResult={runResult}
                 isRunning={isRunning}
                 nodeLabels={nodeLabels}
+                terminalNodeIds={terminalNodeIds}
                 validation={validation}
                 openProblemsRequest={validateRequest}
             />

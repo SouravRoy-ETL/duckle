@@ -21,6 +21,7 @@ export type Props = {
     runResult: RunResult | null;
     isRunning: boolean;
     nodeLabels: Record<string, string>;
+    terminalNodeIds: string[];
     validation: ValidationResult;
     openProblemsRequest?: number;
 };
@@ -29,6 +30,7 @@ export default function BottomPanel({
     runResult,
     isRunning,
     nodeLabels,
+    terminalNodeIds,
     validation,
     openProblemsRequest,
 }: Props) {
@@ -149,6 +151,7 @@ export default function BottomPanel({
                             runResult={runResult}
                             isRunning={isRunning}
                             nodeLabels={nodeLabels}
+                            terminalNodeIds={terminalNodeIds}
                         />
                     ) : null}
                     {tab === 'console' ? <ConsoleTab /> : null}
@@ -235,10 +238,12 @@ function OutputTab({
     runResult,
     isRunning,
     nodeLabels,
+    terminalNodeIds,
 }: {
     runResult: RunResult | null;
     isRunning: boolean;
     nodeLabels: Record<string, string>;
+    terminalNodeIds: string[];
 }) {
     if (isRunning) {
         return (
@@ -264,6 +269,13 @@ function OutputTab({
     }
 
     const totals = runStats(runResult);
+    // Show only the pipeline's terminal results, not a stacked table per
+    // intermediate stage. Fall back to all previews if we can't tell.
+    const terminalSet = new Set(terminalNodeIds);
+    const terminalPreviews =
+        terminalNodeIds.length > 0
+            ? runResult.preview.filter(p => terminalSet.has(p.node_id))
+            : runResult.preview;
     return (
         <div className="bottom-output">
             <div className="bottom-output-summary">
@@ -312,9 +324,9 @@ function OutputTab({
                     {friendlyError(runResult.error)}
                 </div>
             ) : null}
-            {runResult.preview.length > 0 ? (
+            {terminalPreviews.length > 0 ? (
                 <div className="bottom-output-previews">
-                    {runResult.preview.map(p => (
+                    {terminalPreviews.map(p => (
                         <PreviewTable key={p.node_id} preview={p} label={nodeLabels[p.node_id]} />
                     ))}
                 </div>

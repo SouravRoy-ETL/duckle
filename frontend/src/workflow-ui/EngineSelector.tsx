@@ -9,6 +9,8 @@ type EngineMeta = {
     label: string;
     description: string;
     dot: string;
+    /** Not selectable yet — shown greyed with a "coming soon" note. */
+    comingSoon?: boolean;
 };
 
 const ENGINES: EngineMeta[] = [
@@ -29,6 +31,7 @@ const ENGINES: EngineMeta[] = [
         label: 'Native',
         description: 'Rust streaming and incremental pipelines.',
         dot: '#7ee787',
+        comingSoon: true,
     },
 ];
 
@@ -125,8 +128,14 @@ export default function EngineSelector({ value, onChange }: Props) {
                                   type="button"
                                   role="option"
                                   aria-selected={e.id === value}
-                                  className="engine-option"
+                                  aria-disabled={e.comingSoon}
+                                  disabled={e.comingSoon}
+                                  className={
+                                      'engine-option' +
+                                      (e.comingSoon ? ' is-coming-soon' : '')
+                                  }
                                   onClick={() => {
+                                      if (e.comingSoon) return;
                                       onChange(e.id);
                                       setOpen(false);
                                   }}
@@ -137,10 +146,17 @@ export default function EngineSelector({ value, onChange }: Props) {
                                       aria-hidden
                                   />
                                   <div className="engine-option-text">
-                                      <div className="engine-option-label">{e.label}</div>
+                                      <div className="engine-option-label">
+                                          {e.label}
+                                          {e.comingSoon ? (
+                                              <span className="engine-option-soon">
+                                                  coming soon
+                                              </span>
+                                          ) : null}
+                                      </div>
                                       <div className="engine-option-desc">{e.description}</div>
                                   </div>
-                                  {e.id === value ? (
+                                  {e.id === value && !e.comingSoon ? (
                                       <Check
                                           size={14}
                                           className="engine-option-check"
