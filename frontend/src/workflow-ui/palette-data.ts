@@ -379,6 +379,13 @@ export const PALETTE: Category[] = [
                     xf('ai.dedupe', 'Semantic Dedupe', 'preview', 'Drop near-duplicate rows'),
                 ],
             },
+            {
+                id: 'xf.debug',
+                label: 'Debug',
+                components: [
+                    xf('log', 'Log Rows', 'available', 'Pass rows through and print them to Output'),
+                ],
+            },
         ],
     },
     {

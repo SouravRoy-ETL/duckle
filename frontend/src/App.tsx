@@ -804,11 +804,14 @@ export default function App() {
         return m;
     }, [nodes]);
 
-    // Terminal nodes = nothing downstream. The Output panel previews only
-    // these (the pipeline's actual results), not every intermediate stage.
+    // Which nodes' previews show in the Output panel: terminal nodes (the
+    // pipeline's actual results) plus any Log Rows node, which prints its
+    // rows there wherever it sits in the graph.
     const terminalNodeIds = useMemo(() => {
         const sources = new Set(edges.map(e => e.source));
-        return nodes.filter(n => !sources.has(n.id)).map(n => n.id);
+        return nodes
+            .filter(n => !sources.has(n.id) || n.data.componentId === 'xf.log')
+            .map(n => n.id);
     }, [nodes, edges]);
 
     const handleSave = useCallback(() => {

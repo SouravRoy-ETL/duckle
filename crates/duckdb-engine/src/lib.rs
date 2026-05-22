@@ -54,8 +54,8 @@ impl From<EngineError> for InspectError {
 
 /// Rows sampled alongside the schema for the Preview tab.
 const PREVIEW_LIMIT: usize = 8;
-/// Rows captured per stage during a run.
-const PREVIEW_ROW_LIMIT: usize = 50;
+/// Rows captured per stage during a run (shown in the node Preview tab).
+const PREVIEW_ROW_LIMIT: usize = 100;
 
 /// Drives the downloaded DuckDB CLI. Cheap to clone; holds only the
 /// binary path and a shared cancel flag.

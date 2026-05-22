@@ -22,7 +22,8 @@
         "decorations": false,
         "fullscreen": false,
         "visible": false,
-        "backgroundColor": "#07090F"
+        "backgroundColor": "#07090F",
+        "dragDropEnabled": false
       }
     ],
     "security": {

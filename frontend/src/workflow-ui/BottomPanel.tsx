@@ -154,7 +154,9 @@ export default function BottomPanel({
                             terminalNodeIds={terminalNodeIds}
                         />
                     ) : null}
-                    {tab === 'console' ? <ConsoleTab /> : null}
+                    {tab === 'console' ? (
+                        <ConsoleTab runResult={runResult} nodeLabels={nodeLabels} />
+                    ) : null}
                 </div>
             ) : null}
         </div>
@@ -382,17 +384,59 @@ function formatCell(v: unknown): string {
     return String(v);
 }
 
-function ConsoleTab() {
+function ConsoleTab({
+    runResult,
+    nodeLabels,
+}: {
+    runResult: RunResult | null;
+    nodeLabels: Record<string, string>;
+}) {
+    if (!runResult) {
+        return (
+            <div className="bottom-empty bottom-console">
+                <div className="bottom-console-line">
+                    <Terminal size={12} className="bottom-console-icon" />
+                    <span className="bottom-console-time">[ready]</span>
+                    <span className="bottom-console-msg">
+                        The execution log. Run a pipeline (▶ Run) and each stage's status,
+                        row count, and timing — plus any errors — appears here.
+                    </span>
+                </div>
+            </div>
+        );
+    }
+    const lines = Object.entries(runResult.nodes).map(([id, st]) => {
+        const label = nodeLabels[id] ?? id;
+        const tag = st.status === 'ok' ? 'ok' : st.status;
+        const detail =
+            st.status === 'ok'
+                ? `${label} — ${st.kind ?? 'stage'} — ${st.rows ?? 0} rows — ${st.duration_ms ?? 0} ms`
+                : `${label} — ${friendlyError(st.error) || st.status}`;
+        return { id, tag, detail, ok: st.status === 'ok' };
+    });
     return (
-        <div className="bottom-empty bottom-console">
+        <div className="bottom-console">
             <div className="bottom-console-line">
                 <Terminal size={12} className="bottom-console-icon" />
-                <span className="bottom-console-time">[ready]</span>
+                <span className="bottom-console-time">[run]</span>
                 <span className="bottom-console-msg">
-                    Diagnostics console. Runtime events, engine diagnostics, and connector errors
-                    stream here.
+                    {runResult.status === 'ok' ? 'Pipeline finished' : 'Pipeline ' + runResult.status} ·{' '}
+                    {runResult.duration_ms} ms
                 </span>
             </div>
+            {lines.map(l => (
+                <div className="bottom-console-line" key={l.id}>
+                    <span
+                        className={
+                            'bottom-console-tag ' +
+                            (l.ok ? 'bottom-console-tag-ok' : 'bottom-console-tag-err')
+                        }
+                    >
+                        [{l.tag}]
+                    </span>
+                    <span className="bottom-console-msg">{l.detail}</span>
+                </div>
+            ))}
         </div>
     );
 }

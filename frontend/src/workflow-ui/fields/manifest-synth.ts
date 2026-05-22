@@ -2046,6 +2046,37 @@ function synthAiTransform(comp: ComponentDef): ComponentManifest {
     return synthGeneric(comp, 'upstream');
 }
 
+function synthDebugTransform(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'xf.log') {
+        return base(comp, [
+            {
+                label: 'Log Rows',
+                fields: [
+                    {
+                        key: 'label',
+                        label: 'Log label',
+                        kind: 'text',
+                        placeholder: 'after-filter',
+                        description: 'Shown in the Output / Console next to the logged rows.',
+                    },
+                    {
+                        key: 'limit',
+                        label: 'Max rows to print',
+                        kind: 'integer',
+                        defaultValue: 100,
+                    },
+                    {
+                        key: 'columns',
+                        label: 'Columns (blank = all)',
+                        kind: 'columns',
+                    },
+                ],
+            },
+        ], 'upstream');
+    }
+    return synthGeneric(comp, 'upstream');
+}
+
 function synthGeneric(comp: ComponentDef, schemaSource: SchemaSource = 'upstream'): ComponentManifest {
     return base(comp, [
         {
@@ -2100,6 +2131,7 @@ export function synthesizeManifest(componentId: string): ComponentManifest | und
     if (groupId === 'xf.array') return synthArrayTransform(comp);
     if (groupId === 'xf.cdc') return synthCdcTransform(comp);
     if (groupId === 'xf.ai') return synthAiTransform(comp);
+    if (groupId === 'xf.debug') return synthDebugTransform(comp);
 
     // Control
     if (groupId === 'ctl.routing') return synthRoutingControl(comp);

@@ -356,6 +356,9 @@ fn build_view_sql(
         }
         // Pass-through transforms
         "xf.filter" => build_filter(inputs, props),
+        // Log Rows — pass data through unchanged; its rows surface in the
+        // Output / Preview so you can inspect mid-pipeline (like tLogRow).
+        "xf.log" => build_passthrough_op(inputs, "SELECT *"),
         "xf.project" => build_project(inputs, props),
         "xf.distinct" => build_passthrough_op(inputs, "SELECT DISTINCT *"),
         "xf.limit" => build_limit(inputs, props),
