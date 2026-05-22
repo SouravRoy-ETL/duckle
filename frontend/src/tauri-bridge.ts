@@ -70,6 +70,8 @@ export async function runPipeline(
     nodes: Node<DuckleNodeData>[],
     edges: Edge[],
     onEvent?: (evt: PipelineEvent) => void,
+    pipelineId?: string,
+    workspacePath?: string | null,
 ): Promise<RunResult | null> {
     if (!isTauri()) return null;
     const channel = new Channel<PipelineEvent>();
@@ -78,6 +80,8 @@ export async function runPipeline(
         return await invoke<RunResult>('run_pipeline', {
             pipeline: { nodes, edges },
             onEvent: channel,
+            pipelineId: pipelineId ?? null,
+            workspacePath: workspacePath ?? null,
         });
     } catch (err) {
         console.error('runPipeline failed', err);
@@ -96,6 +100,8 @@ export async function runPipelinePartial(
     edges: Edge[],
     targetNodeId: string,
     onEvent?: (evt: PipelineEvent) => void,
+    pipelineId?: string,
+    workspacePath?: string | null,
 ): Promise<RunResult | null> {
     if (!isTauri()) return null;
     const channel = new Channel<PipelineEvent>();
@@ -105,6 +111,8 @@ export async function runPipelinePartial(
             pipeline: { nodes, edges },
             targetNodeId,
             onEvent: channel,
+            pipelineId: pipelineId ?? null,
+            workspacePath: workspacePath ?? null,
         });
     } catch (err) {
         console.error('runPipelinePartial failed', err);
@@ -115,6 +123,32 @@ export async function runPipelinePartial(
             preview: [],
             error: String(err),
         };
+    }
+}
+
+export type RunRecord = {
+    at: string;
+    status: string;
+    duration_ms: number;
+    rows: number;
+    node_count: number;
+    trigger: string;
+    error?: string;
+};
+
+export async function runHistory(
+    workspacePath: string,
+    pipelineId: string,
+): Promise<RunRecord[]> {
+    if (!isTauri()) return [];
+    try {
+        return await invoke<RunRecord[]>('run_history', {
+            workspacePath,
+            pipelineId,
+        });
+    } catch (err) {
+        console.warn('runHistory failed', err);
+        return [];
     }
 }
 

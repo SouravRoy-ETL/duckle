@@ -5,7 +5,8 @@
 
 use duckle_connectors::CsvConnector;
 use duckle_duckdb_engine::{
-    compile_pipeline_sql, DuckdbEngine, PipelineDoc, PipelineEvent, RunResult, StageSql,
+    append_run_record, compile_pipeline_sql, load_run_history, DuckdbEngine, PipelineDoc,
+    PipelineEvent, RunRecord, RunResult, StageSql,
 };
 use duckle_metadata::Schema;
 use duckle_plugin_sdk::{InspectError, SchemaInspector};
@@ -43,6 +44,7 @@ pub fn run() {
             autodetect_schema,
             run_pipeline,
             run_pipeline_partial,
+            run_history,
             cancel_pipeline,
             compile_pipeline,
             schedule_set_workspace,
@@ -143,15 +145,33 @@ fn format_inspect_error(err: InspectError) -> String {
 async fn run_pipeline(
     pipeline: PipelineDoc,
     on_event: Channel<PipelineEvent>,
+    pipeline_id: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<RunResult, String> {
     let engine = engine()?;
-    tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         engine.execute_pipeline_with_events(&pipeline, None, |evt| {
             let _ = on_event.send(evt);
         })
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    record_history(&pipeline_id, &workspace_path, &result, "manual");
+    Ok(result)
+}
+
+fn record_history(
+    pipeline_id: &Option<String>,
+    workspace_path: &Option<String>,
+    result: &RunResult,
+    trigger: &str,
+) {
+    if let (Some(id), Some(ws)) = (pipeline_id, workspace_path) {
+        let record = RunRecord::from_result(result, trigger);
+        if let Err(e) = append_run_record(std::path::Path::new(ws), id, record) {
+            tracing::warn!("Failed to record run history: {}", e);
+        }
+    }
 }
 
 /// Same as `run_pipeline` but only executes the subgraph upstream of
@@ -162,16 +182,28 @@ async fn run_pipeline_partial(
     pipeline: PipelineDoc,
     target_node_id: String,
     on_event: Channel<PipelineEvent>,
+    pipeline_id: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<RunResult, String> {
     let engine = engine()?;
     let target = target_node_id;
-    tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         engine.execute_pipeline_with_events(&pipeline, Some(target.as_str()), |evt| {
             let _ = on_event.send(evt);
         })
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    record_history(&pipeline_id, &workspace_path, &result, "partial");
+    Ok(result)
+}
+
+/// Read the run history for a pipeline (newest first).
+#[tauri::command]
+fn run_history(workspace_path: String, pipeline_id: String) -> Result<Vec<RunRecord>, String> {
+    let mut records = load_run_history(std::path::Path::new(&workspace_path), &pipeline_id);
+    records.reverse();
+    Ok(records)
 }
 
 /// Signal the engine to stop at the next stage boundary. The current

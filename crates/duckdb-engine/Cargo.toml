@@ -15,6 +15,7 @@ thiserror = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+chrono = { workspace = true }
 duckdb = { workspace = true, features = ["bundled"] }
 duckle-metadata = { workspace = true }
 duckle-plugin-sdk = { workspace = true }

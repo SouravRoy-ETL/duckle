@@ -21,7 +21,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use thiserror::Error;
 
+pub mod history;
 pub mod plan;
+pub use history::{append_run_record, load_run_history, RunRecord};
 pub use plan::{CompiledPipeline, PipelineDoc, Stage, StageKind};
 
 #[derive(Debug, Error)]

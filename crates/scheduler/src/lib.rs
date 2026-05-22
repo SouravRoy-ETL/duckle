@@ -8,7 +8,9 @@
 
 use chrono::{DateTime, Utc};
 use cron::Schedule as CronSchedule;
-use duckle_duckdb_engine::{DuckdbEngine, PipelineDoc, RunResult};
+use duckle_duckdb_engine::{
+    append_run_record, DuckdbEngine, PipelineDoc, RunRecord, RunResult,
+};
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
 use serde::{Deserialize, Serialize};
@@ -243,15 +245,22 @@ impl Scheduler {
 
     fn record_run(&self, id: &str, started: DateTime<Utc>, result: &RunResult) {
         let mut g = self.inner.lock().expect("scheduler poisoned");
+        let mut pipeline_id = None;
         if let Some(s) = g.schedules.iter_mut().find(|s| s.id == id) {
             s.last_run_at = Some(started);
             s.last_run_status = Some(result.status.clone());
             s.last_run_duration_ms = Some(result.duration_ms);
             s.last_run_error = result.error.clone();
+            pipeline_id = Some(s.pipeline_id.clone());
             compute_next_run(s);
         }
         if let Some(path) = g.workspace_path.clone() {
             let _ = save_schedules(&path, &g.schedules);
+            // Append to the pipeline's run history too.
+            if let Some(pid) = pipeline_id {
+                let record = RunRecord::from_result(result, "scheduled");
+                let _ = append_run_record(&path, &pid, record);
+            }
         }
     }
 

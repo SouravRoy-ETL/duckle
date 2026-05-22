@@ -5274,6 +5274,82 @@ select.schema-input {
     flex: 1;
 }
 
+/* Run history (in schedule modal) -------------------------------------- */
+.run-history {
+    margin-top: 16px;
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+}
+
+.run-history-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-3);
+    font-weight: 700;
+    margin-bottom: 8px;
+}
+
+.run-history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.run-history-row {
+    display: grid;
+    grid-template-columns: 10px 70px 1fr 90px 70px auto;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+    font-size: 11.5px;
+    color: var(--text-2);
+    border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+}
+
+.run-history-row:last-child {
+    border-bottom: none;
+}
+
+.run-history-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--success);
+}
+
+.run-history-row.status-error .run-history-dot,
+.run-history-row.status-cancelled .run-history-dot {
+    background: var(--danger);
+}
+
+.run-history-trigger {
+    text-transform: uppercase;
+    font-size: 9px;
+    letter-spacing: 0.05em;
+    color: var(--text-3);
+    font-weight: 700;
+}
+
+.run-history-time {
+    color: var(--text-1);
+}
+
+.run-history-rows,
+.run-history-dur {
+    color: var(--text-3);
+}
+
+.run-history-err {
+    color: var(--danger);
+    font-weight: 600;
+}
+
 .schedule-presets {
     display: flex;
     flex-wrap: wrap;

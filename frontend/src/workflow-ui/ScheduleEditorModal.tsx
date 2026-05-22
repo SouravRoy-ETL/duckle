@@ -14,10 +14,12 @@ import {
 } from 'lucide-react';
 import { isTauri } from '../tauri-dialog';
 import {
+    runHistory,
     scheduleDelete,
     scheduleList,
     scheduleRunNow,
     scheduleUpsert,
+    type RunRecord,
     type Schedule,
     type ScheduleKind,
 } from '../tauri-bridge';
@@ -25,6 +27,7 @@ import {
 type Props = {
     pipelineId: string;
     pipelineName: string;
+    workspacePath: string | null;
     onClose: () => void;
 };
 
@@ -48,8 +51,14 @@ const CRON_PRESETS: { label: string; expr: string }[] = [
     { label: 'Mon–Fri at 08:00', expr: '0 0 8 * * Mon-Fri' },
 ];
 
-export default function ScheduleEditorModal({ pipelineId, pipelineName, onClose }: Props) {
+export default function ScheduleEditorModal({
+    pipelineId,
+    pipelineName,
+    workspacePath,
+    onClose,
+}: Props) {
     const [schedules, setSchedules] = useState<Schedule[]>([]);
+    const [history, setHistory] = useState<RunRecord[]>([]);
     const [editing, setEditing] = useState<Draft | null>(null);
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(false);
@@ -59,8 +68,11 @@ export default function ScheduleEditorModal({ pipelineId, pipelineName, onClose 
         setLoading(true);
         const all = await scheduleList();
         setSchedules(all.filter(s => s.pipeline_id === pipelineId));
+        if (workspacePath) {
+            setHistory(await runHistory(workspacePath, pipelineId));
+        }
         setLoading(false);
-    }, [pipelineId]);
+    }, [pipelineId, workspacePath]);
 
     useEffect(() => {
         void refresh();
@@ -227,6 +239,42 @@ export default function ScheduleEditorModal({ pipelineId, pipelineName, onClose 
                             >
                                 <Plus size={13} /> New schedule
                             </button>
+
+                            {history.length > 0 ? (
+                                <div className="run-history">
+                                    <div className="run-history-title">Recent runs</div>
+                                    <div className="run-history-list">
+                                        {history.slice(0, 12).map((r, i) => (
+                                            <div
+                                                className={'run-history-row status-' + r.status}
+                                                key={i}
+                                            >
+                                                <span className="run-history-dot" />
+                                                <span className="run-history-trigger">
+                                                    {r.trigger}
+                                                </span>
+                                                <span className="run-history-time">
+                                                    {formatTime(r.at)}
+                                                </span>
+                                                <span className="run-history-rows">
+                                                    {r.rows.toLocaleString()} rows
+                                                </span>
+                                                <span className="run-history-dur">
+                                                    {r.duration_ms} ms
+                                                </span>
+                                                {r.error ? (
+                                                    <span
+                                                        className="run-history-err"
+                                                        title={r.error}
+                                                    >
+                                                        failed
+                                                    </span>
+                                                ) : null}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            ) : null}
                         </>
                     )}
                 </div>

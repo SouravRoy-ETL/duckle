@@ -716,21 +716,28 @@ export default function App() {
         setIsRunning(true);
         setRunResult(null);
         const start = performance.now();
-        void runPipeline(nodes, edges, handleEvent)
+        void runPipeline(nodes, edges, handleEvent, activeJobId, workspacePathState)
             .then(result => finishRun(start, result))
             .finally(() => setIsRunning(false));
-    }, [nodes, edges, handleEvent, finishRun]);
+    }, [nodes, edges, handleEvent, finishRun, activeJobId, workspacePathState]);
 
     const handleRunFromHere = useCallback(
         (nodeId: string) => {
             setIsRunning(true);
             setRunResult(null);
             const start = performance.now();
-            void runPipelinePartial(nodes, edges, nodeId, handleEvent)
+            void runPipelinePartial(
+                nodes,
+                edges,
+                nodeId,
+                handleEvent,
+                activeJobId,
+                workspacePathState,
+            )
                 .then(result => finishRun(start, result))
                 .finally(() => setIsRunning(false));
         },
-        [nodes, edges, handleEvent, finishRun],
+        [nodes, edges, handleEvent, finishRun, activeJobId, workspacePathState],
     );
 
     const handleStop = useCallback(() => {
@@ -1422,6 +1429,7 @@ export default function App() {
                         repo.find(r => r.id === scheduleModalPipelineId)?.name ??
                         scheduleModalPipelineId
                     }
+                    workspacePath={workspacePathState}
                     onClose={() => setScheduleModalPipelineId(null)}
                 />
             ) : null}
