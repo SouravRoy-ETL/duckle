@@ -30,6 +30,7 @@ import {
 } from './tauri-bridge';
 import ScheduleEditorModal from './workflow-ui/ScheduleEditorModal';
 import EngineSetupModal from './workflow-ui/EngineSetupModal';
+import WindowControls from './workflow-ui/WindowControls';
 import { engineStatus } from './tauri-bridge';
 import { RunStatusContext } from './canvas/run-status-context';
 import { validatePipeline } from './validation';
@@ -1307,11 +1308,27 @@ export default function App() {
 
     const openJobIds = useMemo(() => new Set(jobs.map(j => j.id)), [jobs]);
 
+    // Double-clicking the title-bar drag region toggles maximize, like a
+    // native window. Ignore double-clicks that land on interactive
+    // controls (they don't carry the drag-region attribute).
+    const handleTitlebarDoubleClick = useCallback((e: React.MouseEvent) => {
+        if (!isInTauri()) return;
+        const el = e.target as HTMLElement;
+        if (!el.hasAttribute('data-tauri-drag-region')) return;
+        void import('@tauri-apps/api/window').then(m =>
+            m.getCurrentWindow().toggleMaximize(),
+        );
+    }, []);
+
     return (
         <RunStatusContext.Provider value={runResult?.nodes ?? {}}>
         <div className="app">
-            <header className="topbar">
-                <div className="brand">
+            <header
+                className="topbar"
+                data-tauri-drag-region
+                onDoubleClick={handleTitlebarDoubleClick}
+            >
+                <div className="brand" data-tauri-drag-region>
                     <span className="brand-mark" aria-hidden="true">
                         D
                     </span>
@@ -1319,7 +1336,7 @@ export default function App() {
                 </div>
                 <div className="topbar-sep" aria-hidden="true" />
                 <EngineSelector value={engine} onChange={setEngine} />
-                <div className="topbar-spacer" />
+                <div className="topbar-spacer" data-tauri-drag-region />
                 {workspaceFolderName ? (
                     <button
                         type="button"
@@ -1343,6 +1360,7 @@ export default function App() {
                 <div className="status" data-state={runtime}>
                     <span className="status-dot" /> runtime: {runtime}
                 </div>
+                <WindowControls />
             </header>
 
             <main className="workspace">

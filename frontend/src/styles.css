@@ -171,15 +171,49 @@ textarea:focus-visible {
     align-items: center;
     gap: 16px;
     height: var(--topbar-h);
-    padding: 0 20px;
+    padding: 0 0 0 20px;
     background:
         linear-gradient(180deg, rgba(24, 212, 224, 0.025), transparent 60%),
         var(--bg-1);
     border-bottom: 1px solid var(--border);
-    -webkit-app-region: drag;
     position: relative;
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
+    user-select: none;
+}
+
+/* Frameless window controls (folded into the topbar) ------------------- */
+.win-controls {
+    display: flex;
+    align-self: stretch;
+    margin-left: 6px;
+}
+
+.win-ctl {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 46px;
+    align-self: stretch;
+    background: transparent;
+    border: none;
+    color: var(--text-3);
+    cursor: pointer;
+    transition: background 90ms ease, color 90ms ease;
+}
+
+.win-ctl:hover {
+    background: var(--bg-3);
+    color: var(--text-1);
+}
+
+.win-ctl-close:hover {
+    background: #e81123;
+    color: #fff;
+}
+
+.win-ctl:active {
+    background: var(--bg-4);
 }
 
 .topbar::after {

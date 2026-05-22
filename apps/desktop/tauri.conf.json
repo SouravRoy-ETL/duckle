@@ -19,7 +19,7 @@
         "minWidth": 1000,
         "minHeight": 600,
         "resizable": true,
-        "decorations": true,
+        "decorations": false,
         "fullscreen": false,
         "visible": false,
         "backgroundColor": "#07090F"
