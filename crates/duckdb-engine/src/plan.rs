@@ -608,7 +608,6 @@ fn build_view_sql(
         "xf.json.flatten" => build_json_flatten(inputs, props),
         "xf.json.merge" => build_json_merge(inputs, props),
         "xf.json.array_agg" => build_json_array_agg(inputs, props),
-        "xf.json.keys" => build_json_keys(inputs, props),
         "xf.text.similarity" => build_text_similarity(inputs, props),
         "xf.text.base64" => build_base64(inputs, props),
         "xf.arr.element" | "xf.arr.distinct" | "xf.arr.explode" => {
@@ -3005,29 +3004,6 @@ fn build_dt_now(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String
         .unwrap_or_else(|| "loaded_at".into());
     Ok(format!(
         "SELECT *, current_timestamp AS {out} FROM {up}",
-        out = quote_ident(&output),
-        up = quote_ident(upstream)
-    ))
-}
-
-/// JSON Keys: extract the top-level field names of a JSON object as
-/// an array. Useful for dynamic schemas (figure out what keys a JSON
-/// payload has before chaining json.path) and for diffing payloads.
-fn build_json_keys(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
-    let upstream = inputs.main().ok_or_else(|| missing_input_msg("xf.json.keys"))?;
-    let column = string_prop(props, "column")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "JSON Keys needs a column".to_string())?;
-    let output = string_prop(props, "outputColumn")
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| format!("{}_keys", column));
-    // Explicit CAST AS JSON so the implicit-cast path doesn't differ
-    // across platforms (Linux DuckDB v1.5.3 returns an empty array for
-    // json_keys on a VARCHAR input; macOS/Windows auto-cast and behave
-    // correctly).
-    Ok(format!(
-        "SELECT *, json_keys(CAST({col} AS JSON)) AS {out} FROM {up}",
-        col = quote_ident(&column),
         out = quote_ident(&output),
         up = quote_ident(upstream)
     ))

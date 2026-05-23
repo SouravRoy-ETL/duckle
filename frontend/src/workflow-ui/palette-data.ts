@@ -372,7 +372,6 @@ export const PALETTE: Category[] = [
                     xf('json.path', 'JSONPath Extract', 'available'),
                     xf('json.merge', 'Merge Objects', 'available'),
                     xf('json.array_agg', 'Array Aggregate', 'available', 'Collapse rows into a JSON array per group (json_group_array)'),
-                    xf('json.keys', 'JSON Keys', 'available', 'Extract the top-level field names of a JSON object as an array'),
                 ],
             },
             {

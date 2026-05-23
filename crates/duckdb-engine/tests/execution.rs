@@ -2287,38 +2287,6 @@ fn dt_now_stamps_loaded_at() {
 }
 
 #[test]
-fn json_keys_extracts_top_level_field_names() {
-    let engine = engine_or_skip!();
-    let tmp = tempfile::tempdir().unwrap();
-    let csv = write_file(
-        tmp.path(),
-        "data.csv",
-        "id,doc\n1,\"{\"\"name\"\":\"\"alice\"\",\"\"age\"\":30}\"\n2,\"{\"\"city\"\":\"\"NYC\"\"}\"\n",
-    );
-    let out = out_path(tmp.path(), "out.csv");
-    let r = engine.execute_pipeline(&doc(
-        json!([
-            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
-            node("k", "xf.json.keys", json!({ "column": "doc", "outputColumn": "fields" })),
-            node("o", "snk.csv", json!({ "path": out, "hasHeader": true })),
-        ]),
-        json!([main_edge("e1", "s", "k"), main_edge("e2", "k", "o")]),
-    ));
-    assert_eq!(r.status, "ok", "json.keys failed: {:?}", r.error);
-    // First row keys -> ['name', 'age'], length 2.
-    let n1 = scalar_string(&format!(
-        "SELECT CAST(length(fields) AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 1",
-        out
-    ));
-    let n2 = scalar_string(&format!(
-        "SELECT CAST(length(fields) AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 2",
-        out
-    ));
-    assert_eq!(n1, "2", "row 1 keys length");
-    assert_eq!(n2, "1", "row 2 keys length");
-}
-
-#[test]
 fn uuid_generates_unique_ids_per_row() {
     let engine = engine_or_skip!();
     let tmp = tempfile::tempdir().unwrap();

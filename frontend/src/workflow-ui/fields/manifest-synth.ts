@@ -2117,12 +2117,6 @@ function synthJsonTransform(comp: ComponentDef): ComponentManifest {
             { key: 'outputColumn', label: 'Output column', kind: 'text', defaultValue: 'merged' },
         ] }], 'upstream');
     }
-    if (id === 'xf.json.keys') {
-        return base(comp, [{ label: 'JSON keys', fields: [
-            col,
-            { key: 'outputColumn', label: 'Output column', kind: 'text', placeholder: '<column>_keys' },
-        ] }], 'upstream');
-    }
     if (id === 'xf.json.array_agg') {
         return base(comp, [
             {
