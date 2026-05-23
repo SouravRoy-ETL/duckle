@@ -1705,24 +1705,6 @@ function synthStringTransform(comp: ComponentDef): ComponentManifest {
             },
         ], 'upstream');
     }
-    if (comp.id === 'xf.text.tokenize') {
-        return base(comp, [
-            {
-                label: 'Tokenize',
-                fields: [
-                    { key: 'column', label: 'Column', kind: 'column', required: true },
-                    {
-                        key: 'pattern',
-                        label: 'Token pattern (regex)',
-                        kind: 'text',
-                        placeholder: '[a-z0-9]+',
-                        description: 'Default matches any run of alphanumerics. Anything not matching the pattern is treated as a separator.',
-                    },
-                    { key: 'outputColumn', label: 'Output column', kind: 'text', placeholder: '<column>_tokens' },
-                ],
-            },
-        ], 'upstream');
-    }
     if (comp.id === 'xf.text.similarity') {
         return base(comp, [
             {

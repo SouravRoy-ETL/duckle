@@ -603,7 +603,6 @@ fn build_view_sql(
         "xf.json.array_agg" => build_json_array_agg(inputs, props),
         "xf.text.similarity" => build_text_similarity(inputs, props),
         "xf.text.base64" => build_base64(inputs, props),
-        "xf.text.tokenize" => build_tokenize(inputs, props),
         "xf.arr.element" | "xf.arr.distinct" | "xf.arr.explode" => {
             build_array(inputs, props, component_id)
         }
@@ -2961,34 +2960,6 @@ fn build_base64(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String
     Ok(format!(
         "SELECT *, {expr} AS {out} FROM {up}",
         expr = expr,
-        out = quote_ident(&output),
-        up = quote_ident(upstream)
-    ))
-}
-
-/// Tokenize: lowercase the input column, normalize any run of
-/// non-alphanumerics to a single space, then split on space.
-/// Done with regexp_replace + string_split which are both in every
-/// DuckDB build (regexp_extract_all / list_filter lambdas have had
-/// platform-specific quirks in v1.5.3 releases). Result is an array
-/// of words: 'Hello, World!' -> ['hello', 'world', ''] - empty
-/// strings at boundaries are accepted as the cost of portability;
-/// downstream can chain xf.arr.distinct or similar to scrub them.
-fn build_tokenize(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
-    let upstream = inputs.main().ok_or_else(|| missing_input_msg("xf.text.tokenize"))?;
-    let column = string_prop(props, "column")
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "Tokenize needs a column".to_string())?;
-    let pattern = string_prop(props, "pattern")
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "[^a-z0-9]+".into());
-    let output = string_prop(props, "outputColumn")
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| format!("{}_tokens", column));
-    Ok(format!(
-        "SELECT *, string_split(trim(regexp_replace(lower(CAST({col} AS VARCHAR)), '{pat}', ' ', 'g')), ' ') AS {out} FROM {up}",
-        col = quote_ident(&column),
-        pat = sql_escape(&pattern),
         out = quote_ident(&output),
         up = quote_ident(upstream)
     ))
