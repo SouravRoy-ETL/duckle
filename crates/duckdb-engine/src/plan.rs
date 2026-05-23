@@ -3021,8 +3021,12 @@ fn build_json_keys(inputs: &NodeInputs, props: &JsonValue) -> Result<String, Str
     let output = string_prop(props, "outputColumn")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("{}_keys", column));
+    // Explicit CAST AS JSON so the implicit-cast path doesn't differ
+    // across platforms (Linux DuckDB v1.5.3 returns an empty array for
+    // json_keys on a VARCHAR input; macOS/Windows auto-cast and behave
+    // correctly).
     Ok(format!(
-        "SELECT *, json_keys({col}) AS {out} FROM {up}",
+        "SELECT *, json_keys(CAST({col} AS JSON)) AS {out} FROM {up}",
         col = quote_ident(&column),
         out = quote_ident(&output),
         up = quote_ident(upstream)

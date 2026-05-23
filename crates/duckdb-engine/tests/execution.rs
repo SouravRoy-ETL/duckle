@@ -2314,8 +2314,8 @@ fn json_keys_extracts_top_level_field_names() {
         "SELECT CAST(length(fields) AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 2",
         out
     ));
-    assert_eq!(n1, "2");
-    assert_eq!(n2, "1");
+    assert_eq!(n1, "2", "row 1 keys length");
+    assert_eq!(n2, "1", "row 2 keys length");
 }
 
 #[test]
