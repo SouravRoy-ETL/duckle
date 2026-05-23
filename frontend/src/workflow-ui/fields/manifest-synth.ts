@@ -1448,6 +1448,13 @@ function synthFieldsTransform(comp: ComponentDef): ComponentManifest {
             { label: 'Reorder', fields: [{ key: 'columns', label: 'Columns in new order', kind: 'columns', required: true }] },
         ], schemaSource);
     }
+    if (id === 'xf.uuid') {
+        return base(comp, [
+            { label: 'UUID', fields: [
+                { key: 'outputColumn', label: 'Output column', kind: 'text', defaultValue: 'row_id' },
+            ] },
+        ], 'upstream');
+    }
     return synthGeneric(comp, schemaSource);
 }
 
@@ -1939,6 +1946,11 @@ function synthDateTimeTransform(comp: ComponentDef): ComponentManifest {
     if (id === 'xf.dt.trunc') {
         return base(comp, [{ label: 'Truncate', fields: [col, unitField('Truncate to'), outColField()] }], 'upstream');
     }
+    if (id === 'xf.dt.now') {
+        return base(comp, [{ label: 'Current timestamp', fields: [
+            { key: 'outputColumn', label: 'Output column', kind: 'text', defaultValue: 'loaded_at' },
+        ] }], 'upstream');
+    }
     if (id === 'xf.dt.bin') {
         return base(comp, [{ label: 'Time bin', fields: [
             col,
@@ -2103,6 +2115,12 @@ function synthJsonTransform(comp: ComponentDef): ComponentManifest {
             { key: 'column', label: 'First JSON column', kind: 'column', required: true },
             { key: 'secondColumn', label: 'Second JSON column', kind: 'column', required: true },
             { key: 'outputColumn', label: 'Output column', kind: 'text', defaultValue: 'merged' },
+        ] }], 'upstream');
+    }
+    if (id === 'xf.json.keys') {
+        return base(comp, [{ label: 'JSON keys', fields: [
+            col,
+            { key: 'outputColumn', label: 'Output column', kind: 'text', placeholder: '<column>_keys' },
         ] }], 'upstream');
     }
     if (id === 'xf.json.array_agg') {

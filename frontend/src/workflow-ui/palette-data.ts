@@ -232,6 +232,7 @@ export const PALETTE: Category[] = [
                     xf('dropcol', 'Drop Columns', 'available'),
                     xf('reorder', 'Reorder Columns', 'available'),
                     xf('coalesce', 'Coalesce / Null Fill', 'available', 'Fill nulls via an expression'),
+                    xf('uuid', 'UUID', 'available', 'Add a fresh UUID v4 column per row - the standard surrogate row id'),
                 ],
             },
             {
@@ -333,6 +334,7 @@ export const PALETTE: Category[] = [
                     xf('dt.trunc', 'Truncate', 'available'),
                     xf('dt.tz', 'Timezone Convert', 'available'),
                     xf('dt.bin', 'Time Bin', 'available', 'Round timestamps down to fixed-interval buckets (e.g. 5 minutes, 1 hour) for time-series grouping'),
+                    xf('dt.now', 'Current Timestamp', 'available', 'Add a column with the pipeline run time - the standard loaded_at / processed_at stamp'),
                 ],
             },
             {
@@ -370,6 +372,7 @@ export const PALETTE: Category[] = [
                     xf('json.path', 'JSONPath Extract', 'available'),
                     xf('json.merge', 'Merge Objects', 'available'),
                     xf('json.array_agg', 'Array Aggregate', 'available', 'Collapse rows into a JSON array per group (json_group_array)'),
+                    xf('json.keys', 'JSON Keys', 'available', 'Extract the top-level field names of a JSON object as an array'),
                 ],
             },
             {

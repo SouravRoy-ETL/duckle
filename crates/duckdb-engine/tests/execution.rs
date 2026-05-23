@@ -2263,6 +2263,89 @@ fn geo_distance_computes_point_distance() {
 }
 
 #[test]
+fn dt_now_stamps_loaded_at() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,alice\n2,bob\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("n", "xf.dt.now", json!({ "outputColumn": "loaded_at" })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "n"), main_edge("e2", "n", "k")]),
+    ));
+    assert_eq!(r.status, "ok", "dt.now failed: {:?}", r.error);
+    // Sanity-check that loaded_at is a recent year (>= 2024). Comparing
+    // against current_timestamp directly via duckdb_exec.
+    let recent = scalar_string(&format!(
+        "SELECT CASE WHEN year(CAST(loaded_at AS TIMESTAMP)) >= 2024 THEN 'ok' ELSE 'bad' END FROM read_csv_auto('{}') LIMIT 1",
+        out
+    ));
+    assert_eq!(recent, "ok");
+}
+
+#[test]
+fn json_keys_extracts_top_level_field_names() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "data.csv",
+        "id,doc\n1,\"{\"\"name\"\":\"\"alice\"\",\"\"age\"\":30}\"\n2,\"{\"\"city\"\":\"\"NYC\"\"}\"\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("k", "xf.json.keys", json!({ "column": "doc", "outputColumn": "fields" })),
+            node("o", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "k"), main_edge("e2", "k", "o")]),
+    ));
+    assert_eq!(r.status, "ok", "json.keys failed: {:?}", r.error);
+    // First row keys -> ['name', 'age'], length 2.
+    let n1 = scalar_string(&format!(
+        "SELECT CAST(length(fields) AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 1",
+        out
+    ));
+    let n2 = scalar_string(&format!(
+        "SELECT CAST(length(fields) AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 2",
+        out
+    ));
+    assert_eq!(n1, "2");
+    assert_eq!(n2, "1");
+}
+
+#[test]
+fn uuid_generates_unique_ids_per_row() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "in.csv",
+        "id\n1\n2\n3\n4\n5\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("u", "xf.uuid", json!({ "outputColumn": "row_id" })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "u"), main_edge("e2", "u", "k")]),
+    ));
+    assert_eq!(r.status, "ok", "uuid failed: {:?}", r.error);
+    // 5 rows in, 5 distinct UUIDs out.
+    let distinct = scalar_string(&format!(
+        "SELECT CAST(count(DISTINCT row_id) AS VARCHAR) FROM read_csv_auto('{}')",
+        out
+    ));
+    assert_eq!(distinct, "5");
+}
+
+#[test]
 fn cumulative_running_sum_per_group() {
     let engine = engine_or_skip!();
     let tmp = tempfile::tempdir().unwrap();
