@@ -2263,6 +2263,118 @@ fn geo_distance_computes_point_distance() {
 }
 
 #[test]
+fn num_bucketize_assigns_width_buckets() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "scores.csv",
+        "id,score\n1,5\n2,15\n3,55\n4,95\n5,150\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("b", "xf.num.bucketize", json!({
+                "column": "score", "low": 0, "high": 100, "buckets": 10,
+                "outputColumn": "decile"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "b"), main_edge("e2", "b", "k")]),
+    ));
+    assert_eq!(r.status, "ok", "bucketize failed: {:?}", r.error);
+    let d1 = scalar_string(&format!(
+        "SELECT CAST(decile AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 1",
+        out
+    ));
+    let d3 = scalar_string(&format!(
+        "SELECT CAST(decile AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 3",
+        out
+    ));
+    let d5 = scalar_string(&format!(
+        "SELECT CAST(decile AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 5",
+        out
+    ));
+    // width_bucket(5, 0, 100, 10) = 1, width_bucket(55, ...) = 6,
+    // width_bucket(150, ...) = 11 (overflow bucket).
+    assert_eq!(d1, "1");
+    assert_eq!(d3, "6");
+    assert_eq!(d5, "11");
+}
+
+#[test]
+fn json_array_agg_collapses_rows_per_group() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "items.csv",
+        "user,item\nalice,apple\nalice,banana\nbob,carrot\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("a", "xf.json.array_agg", json!({
+                "column": "item", "groupBy": ["user"], "outputColumn": "items"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "a"), main_edge("e2", "a", "k")]),
+    ));
+    assert_eq!(r.status, "ok", "array_agg failed: {:?}", r.error);
+    let alice = scalar_string(&format!(
+        "SELECT items FROM read_csv_auto('{}') WHERE \"user\" = 'alice'",
+        out
+    ));
+    // json_group_array gives ["apple","banana"] - exact order depends on
+    // input but DuckDB preserves scan order for grouped aggregates with
+    // a single thread on this tiny input.
+    assert!(alice.contains("apple") && alice.contains("banana"), "got {}", alice);
+}
+
+#[test]
+fn text_similarity_scores_with_levenshtein() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "pairs.csv",
+        "id,a,b\n1,kitten,sitting\n2,foo,foo\n3,abc,xyz\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("t", "xf.text.similarity", json!({
+                "leftColumn": "a", "rightColumn": "b",
+                "algorithm": "levenshtein", "outputColumn": "dist"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "t"), main_edge("e2", "t", "k")]),
+    ));
+    assert_eq!(r.status, "ok", "similarity failed: {:?}", r.error);
+    let d1 = scalar_string(&format!(
+        "SELECT CAST(dist AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 1",
+        out
+    ));
+    let d2 = scalar_string(&format!(
+        "SELECT CAST(dist AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 2",
+        out
+    ));
+    let d3 = scalar_string(&format!(
+        "SELECT CAST(dist AS VARCHAR) FROM read_csv_auto('{}') WHERE id = 3",
+        out
+    ));
+    // kitten -> sitting is the classic 3 edits.
+    assert_eq!(d1, "3");
+    assert_eq!(d2, "0");
+    assert_eq!(d3, "3");
+}
+
+#[test]
 fn assert_passes_when_predicate_holds_on_every_row() {
     let engine = engine_or_skip!();
     let tmp = tempfile::tempdir().unwrap();

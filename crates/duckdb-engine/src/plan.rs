@@ -588,6 +588,7 @@ fn build_view_sql(
         "xf.geo.intersects" => build_geo_intersects(inputs, props),
         "xf.num.round" | "xf.num.abs" | "xf.num.mod" | "xf.num.power" | "xf.num.sqrt"
         | "xf.num.log" => build_numeric(inputs, props, component_id),
+        "xf.num.bucketize" => build_bucketize(inputs, props),
         "xf.dt.parse" | "xf.dt.format" | "xf.dt.extract" | "xf.dt.trunc" | "xf.dt.tz" => {
             build_datetime(inputs, props, component_id)
         }
@@ -598,6 +599,8 @@ fn build_view_sql(
         }
         "xf.json.flatten" => build_json_flatten(inputs, props),
         "xf.json.merge" => build_json_merge(inputs, props),
+        "xf.json.array_agg" => build_json_array_agg(inputs, props),
+        "xf.text.similarity" => build_text_similarity(inputs, props),
         "xf.arr.element" | "xf.arr.distinct" | "xf.arr.explode" => {
             build_array(inputs, props, component_id)
         }
@@ -2929,6 +2932,106 @@ fn build_geo_buffer(inputs: &NodeInputs, props: &JsonValue) -> Result<String, St
         "SELECT *, ST_Buffer(CAST({col} AS GEOMETRY), {distance}) AS {out} FROM {up}",
         col = quote_ident(&column),
         distance = distance,
+        out = quote_ident(&output),
+        up = quote_ident(upstream)
+    ))
+}
+
+/// Numeric Bucketize: bin a numeric column into N equal-width
+/// buckets between low and high using DuckDB's width_bucket. The
+/// output column is the bucket index (1..N for in-range values, 0
+/// for below-low, N+1 for above-high - matches PostgreSQL semantics).
+fn build_bucketize(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("xf.num.bucketize"))?;
+    let column = string_prop(props, "column")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Bucketize needs a column".to_string())?;
+    let low = props
+        .get("low")
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| "Bucketize needs a low bound".to_string())?;
+    let high = props
+        .get("high")
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| "Bucketize needs a high bound".to_string())?;
+    let buckets = props
+        .get("buckets")
+        .and_then(|v| v.as_i64())
+        .filter(|n| *n > 0)
+        .unwrap_or(10);
+    let output = string_prop(props, "outputColumn")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("{}_bucket", column));
+    Ok(format!(
+        "SELECT *, width_bucket(CAST({col} AS DOUBLE), {low}, {high}, {n}) AS {out} FROM {up}",
+        col = quote_ident(&column),
+        low = low,
+        high = high,
+        n = buckets,
+        out = quote_ident(&output),
+        up = quote_ident(upstream)
+    ))
+}
+
+/// JSON Array Agg: collapse multiple rows into a JSON array per group
+/// via json_group_array. With no groupBy, produces one row with the
+/// whole input as a single array.
+fn build_json_array_agg(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("xf.json.array_agg"))?;
+    let column = string_prop(props, "column")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "JSON Array Agg needs a column".to_string())?;
+    let group_by: Vec<String> = columns_from_props(props, "groupBy").unwrap_or_default();
+    let output = string_prop(props, "outputColumn")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("{}_array", column));
+    let agg = format!("json_group_array({}) AS {}", quote_ident(&column), quote_ident(&output));
+    if group_by.is_empty() {
+        Ok(format!("SELECT {} FROM {}", agg, quote_ident(upstream)))
+    } else {
+        let cols = group_by
+            .iter()
+            .map(|c| quote_ident(c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(format!(
+            "SELECT {cols}, {agg} FROM {up} GROUP BY {cols}",
+            cols = cols,
+            agg = agg,
+            up = quote_ident(upstream)
+        ))
+    }
+}
+
+/// Text Similarity: pairwise string similarity between two columns
+/// via levenshtein (edit distance), damerau_levenshtein (also counts
+/// transpositions), jaccard (set similarity of trigrams), or
+/// jaro_winkler_similarity (0..1, weighted toward shared prefixes).
+/// The first two are integer distances (lower = more similar); the
+/// last two are normalized similarities (higher = more similar).
+fn build_text_similarity(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("xf.text.similarity"))?;
+    let left_col = string_prop(props, "leftColumn")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Text Similarity needs a left column".to_string())?;
+    let right_col = string_prop(props, "rightColumn")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Text Similarity needs a right column".to_string())?;
+    let algo = string_prop(props, "algorithm").unwrap_or_else(|| "levenshtein".into());
+    let fn_name = match algo.as_str() {
+        "damerau_levenshtein" => "damerau_levenshtein",
+        "jaccard" => "jaccard",
+        "jaro_winkler" => "jaro_winkler_similarity",
+        _ => "levenshtein",
+    };
+    let output = string_prop(props, "outputColumn")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("{}_{}_{}_score", left_col, right_col, fn_name));
+    Ok(format!(
+        "SELECT *, {fn}(CAST({l} AS VARCHAR), CAST({r} AS VARCHAR)) AS {out} FROM {up}",
+        fn = fn_name,
+        l = quote_ident(&left_col),
+        r = quote_ident(&right_col),
         out = quote_ident(&output),
         up = quote_ident(upstream)
     ))

@@ -1684,6 +1684,30 @@ function synthWindowTransform(comp: ComponentDef): ComponentManifest {
 }
 
 function synthStringTransform(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'xf.text.similarity') {
+        return base(comp, [
+            {
+                label: 'Text similarity',
+                fields: [
+                    { key: 'leftColumn', label: 'Left column', kind: 'column', required: true },
+                    { key: 'rightColumn', label: 'Right column', kind: 'column', required: true },
+                    {
+                        key: 'algorithm',
+                        label: 'Algorithm',
+                        kind: 'select',
+                        defaultValue: 'levenshtein',
+                        options: [
+                            { label: 'Levenshtein (edit distance, integer)', value: 'levenshtein' },
+                            { label: 'Damerau-Levenshtein (adds transpositions)', value: 'damerau_levenshtein' },
+                            { label: 'Jaccard (trigram set similarity, 0-1)', value: 'jaccard' },
+                            { label: 'Jaro-Winkler (similarity, 0-1, prefix-weighted)', value: 'jaro_winkler' },
+                        ],
+                    },
+                    { key: 'outputColumn', label: 'Output column', kind: 'text', placeholder: '<left>_<right>_score' },
+                ],
+            },
+        ], 'upstream');
+    }
     if (comp.id === 'xf.regex.match') {
         return base(comp, [
             {
@@ -1867,6 +1891,20 @@ function synthDateTimeTransform(comp: ComponentDef): ComponentManifest {
 }
 
 function synthNumericTransform(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'xf.num.bucketize') {
+        return base(comp, [
+            {
+                label: 'Bucketize',
+                fields: [
+                    { key: 'column', label: 'Column', kind: 'column', required: true },
+                    { key: 'low', label: 'Low bound', kind: 'number', required: true, defaultValue: 0 },
+                    { key: 'high', label: 'High bound', kind: 'number', required: true, defaultValue: 100 },
+                    { key: 'buckets', label: 'Number of buckets', kind: 'integer', defaultValue: 10 },
+                    { key: 'outputColumn', label: 'Output column', kind: 'text', placeholder: '<column>_bucket' },
+                ],
+            },
+        ], 'upstream');
+    }
     return base(comp, [
         {
             label: 'Numeric operation',
@@ -1966,6 +2004,23 @@ function synthJsonTransform(comp: ComponentDef): ComponentManifest {
             { key: 'secondColumn', label: 'Second JSON column', kind: 'column', required: true },
             { key: 'outputColumn', label: 'Output column', kind: 'text', defaultValue: 'merged' },
         ] }], 'upstream');
+    }
+    if (id === 'xf.json.array_agg') {
+        return base(comp, [
+            {
+                label: 'Array aggregate',
+                fields: [
+                    { key: 'column', label: 'Column to collect', kind: 'column', required: true },
+                    {
+                        key: 'groupBy',
+                        label: 'Group by (optional)',
+                        kind: 'columns',
+                        description: 'Leave empty to collapse the entire input into one array.',
+                    },
+                    { key: 'outputColumn', label: 'Output column', kind: 'text', placeholder: '<column>_array' },
+                ],
+            },
+        ], 'declared');
     }
     // parse / stringify
     return base(comp, [{ label: 'JSON operation', fields: [col, outColField()] }], 'upstream');

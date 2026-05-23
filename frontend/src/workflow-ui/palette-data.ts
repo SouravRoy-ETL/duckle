@@ -305,6 +305,7 @@ export const PALETTE: Category[] = [
                     xf('regex.extract', 'Regex Extract', 'available', 'Extract a capture group from a column via regexp_extract'),
                     xf('regex.match', 'Regex Match', 'available', 'Boolean: does the regex match the column? (regexp_matches)'),
                     xf('url.parse', 'URL Parse', 'available', 'Extract scheme / host / port / path / query / fragment from a URL column'),
+                    xf('text.similarity', 'Text Similarity', 'available', 'Pairwise string similarity between two columns - levenshtein / damerau / jaccard / jaro-winkler'),
                     xf('split', 'Split', 'available'),
                     xf('concat', 'Concat', 'available'),
                     xf('trim', 'Trim', 'available'),
@@ -339,6 +340,7 @@ export const PALETTE: Category[] = [
                     xf('num.log', 'Logarithm', 'available'),
                     xf('num.power', 'Power', 'available'),
                     xf('num.sqrt', 'Square Root', 'available'),
+                    xf('num.bucketize', 'Bucketize', 'available', 'Bin a numeric column into N equal-width buckets between low and high (width_bucket)'),
                 ],
             },
             {
@@ -361,6 +363,7 @@ export const PALETTE: Category[] = [
                     xf('json.flatten', 'Flatten', 'available'),
                     xf('json.path', 'JSONPath Extract', 'available'),
                     xf('json.merge', 'Merge Objects', 'available'),
+                    xf('json.array_agg', 'Array Aggregate', 'available', 'Collapse rows into a JSON array per group (json_group_array)'),
                 ],
             },
             {

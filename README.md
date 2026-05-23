@@ -115,10 +115,10 @@ Duckle is not a CSV tool with extras. It reads a broad set of formats and source
 | **Join** | Inner, Left, Right, Full Outer, Cross, Lookup, Semi, Anti, **Spatial Join** (two-input join whose predicate is ST_Intersects / Contains / Within / Touches / Crosses / Overlaps / Equals; INNER or LEFT) |
 | **Set operations** | Union, Union All, Intersect, Except / Minus |
 | **Window** | Row Number, Rank, Dense Rank, Lead, Lag, First Value, Last Value, NTile |
-| **Strings** | Regex Replace, **Regex Extract** (pull a capture group out of a column via `regexp_extract`), **Regex Match** (boolean column from `regexp_matches`), Split, Concat, Trim, Case Change, Length, Substring, Format, **Hash** (md5 / sha1 / sha256 for anonymization or deterministic IDs), **IP Parse** (extract host / family / netmask / broadcast / mask length / network from IP or CIDR text via the `inet` extension), **URL Parse** (extract scheme / host / port / path / query / fragment from URL columns) |
+| **Strings** | Regex Replace, **Regex Extract** (pull a capture group out of a column via `regexp_extract`), **Regex Match** (boolean column from `regexp_matches`), Split, Concat, Trim, Case Change, Length, Substring, Format, **Hash** (md5 / sha1 / sha256 for anonymization or deterministic IDs), **IP Parse** (extract host / family / netmask / broadcast / mask length / network from IP or CIDR text via the `inet` extension), **URL Parse** (extract scheme / host / port / path / query / fragment from URL columns), **Text Similarity** (pairwise score between two columns via `levenshtein` / `damerau_levenshtein` / `jaccard` / `jaro_winkler_similarity`) |
 | **Date / Time** | Parse, Format, Extract Part, Date Diff, Date Add, Truncate, Timezone Convert |
-| **Numeric** | Round, Modulo, Absolute, Logarithm, Power, Square Root |
-| **JSON / nested** | Parse JSON, Stringify, Flatten, JSONPath Extract, Merge Objects |
+| **Numeric** | Round, Modulo, Absolute, Logarithm, Power, Square Root, **Bucketize** (bin into N equal-width buckets between low and high via `width_bucket`) |
+| **JSON / nested** | Parse JSON, Stringify, Flatten, JSONPath Extract, Merge Objects, **Array Aggregate** (collapse rows into a JSON array per group via `json_group_array`) |
 | **Array** | Explode / Unnest, Collect List, Element At, Contains, Array Distinct |
 | **Pivot / shape** | Pivot, **Unpivot**, **Denormalize** (group + delimited cells), **Normalize** (explode delimited / array column), **Transpose** |
 | **CDC / SCD** | **Diff Detect** (tag inserted / updated / deleted rows vs a previous snapshot), **SCD Type 1**, **SCD Type 2** (versioned history with valid_from / valid_to / is_current), **Merge / Upsert** |
