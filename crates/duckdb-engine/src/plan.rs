@@ -399,6 +399,7 @@ fn build_view_sql(
             component_id.strip_prefix("src.").unwrap_or(component_id),
             props,
         )),
+        "src.postgres" => build_pg_source(props),
         // Pass-through transforms
         "xf.filter" => build_filter(inputs, props),
         // Log Rows - pass data through unchanged; its rows surface in the
@@ -2096,6 +2097,11 @@ fn build_duckdb_source(props: &JsonValue) -> String {
 /// (`duckle_src` / `duckle_dst`) - safe because each stage is its own
 /// CLI process.
 fn attach_prelude(component_id: &str, props: &JsonValue) -> String {
+    // PostgreSQL goes first: it uses host/port + libpq fields, not the
+    // file-style `database` path the other ATTACH connectors use.
+    if component_id == "src.postgres" || component_id == "snk.postgres" {
+        return pg_attach(props, component_id == "src.postgres");
+    }
     let db = match string_prop(props, "database").filter(|s| !s.is_empty()) {
         Some(d) => d,
         None => return String::new(),
@@ -2106,6 +2112,96 @@ fn attach_prelude(component_id: &str, props: &JsonValue) -> String {
         "snk.duckdb" => format!("ATTACH '{}' AS duckle_dst; ", sql_escape(&db)),
         _ => String::new(),
     }
+}
+
+/// ATTACH a PostgreSQL database via the postgres extension. The
+/// connection string is built libpq-style from the form's host / port /
+/// database / user / password. `read_only` controls whether the alias is
+/// `duckle_src` (source, READ_ONLY) or `duckle_dst` (sink, writable).
+/// We prepend INSTALL+LOAD so the extension is fetched on first use
+/// without manual setup.
+fn pg_attach(props: &JsonValue, read_only: bool) -> String {
+    let host = string_prop(props, "host").unwrap_or_default();
+    if host.is_empty() {
+        return String::new();
+    }
+    let port = props.get("port").and_then(|v| v.as_u64()).unwrap_or(5432);
+    let mut parts = vec![format!("host={}", host), format!("port={}", port)];
+    if let Some(db) = string_prop(props, "database").filter(|s| !s.is_empty()) {
+        parts.push(format!("dbname={}", db));
+    }
+    if let Some(u) = string_prop(props, "user").filter(|s| !s.is_empty()) {
+        parts.push(format!("user={}", u));
+    }
+    if let Some(p) = string_prop(props, "password").filter(|s| !s.is_empty()) {
+        parts.push(format!("password={}", p));
+    }
+    let connstr = parts.join(" ");
+    let (alias, mode) = if read_only {
+        ("duckle_src", ", READ_ONLY")
+    } else {
+        ("duckle_dst", "")
+    };
+    format!(
+        "INSTALL postgres; LOAD postgres; ATTACH '{}' AS {} (TYPE POSTGRES{}); ",
+        sql_escape(&connstr),
+        alias,
+        mode
+    )
+}
+
+/// PostgreSQL source. Reads from the table named in the form (whole-
+/// table mode) or runs a user query (sql mode) against the ATTACHed
+/// `duckle_src` database. The user's SQL must reference tables as
+/// `duckle_src.<schema>.<table>` so the CREATE TABLE for the stage's
+/// view lands in the default temp DB, not in the read-only PG.
+fn build_pg_source(props: &JsonValue) -> Result<String, String> {
+    let mode = string_prop(props, "mode").unwrap_or_else(|| "table".into());
+    if mode == "sql" {
+        let sql = string_prop(props, "sql")
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| "PostgreSQL source: SQL query is empty".to_string())?;
+        return Ok(format!("({})", sql));
+    }
+    if mode == "incremental" {
+        return Err("PostgreSQL source: incremental read mode isn't implemented yet".to_string());
+    }
+    let table = string_prop(props, "tableName")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "PostgreSQL source: table name is required".to_string())?;
+    let schema = string_prop(props, "schemaName")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "public".into());
+    Ok(format!(
+        "SELECT * FROM duckle_src.{}.{}",
+        quote_ident(&schema),
+        quote_ident(&table)
+    ))
+}
+
+/// PostgreSQL sink. Only `overwrite` (DROP + CREATE) is wired today;
+/// append / upsert / truncate / error-if-exists error loudly rather than
+/// pretending to apply. Writes inside the ATTACHed `duckle_dst` DB.
+fn build_pg_sink(props: &JsonValue, from_view: &str) -> Result<String, EngineError> {
+    let table = string_prop(props, "tableName")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| EngineError::Config("PostgreSQL sink: table name is required".into()))?;
+    let schema = string_prop(props, "schemaName")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "public".into());
+    let mode = string_prop(props, "mode").unwrap_or_else(|| "overwrite".into());
+    if mode != "overwrite" {
+        return Err(EngineError::Config(format!(
+            "PostgreSQL sink: write mode '{}' isn't implemented yet (use 'overwrite')",
+            mode
+        )));
+    }
+    let qual = format!("duckle_dst.{}.{}", quote_ident(&schema), quote_ident(&table));
+    Ok(format!(
+        "DROP TABLE IF EXISTS {q}; CREATE TABLE {q} AS (SELECT * FROM {from})",
+        q = qual,
+        from = quote_ident(from_view)
+    ))
 }
 
 /// SQLite / DuckDB sink - write the upstream into a table inside the
@@ -2196,6 +2292,7 @@ fn build_sink_sql(
         "snk.json" | "snk.jsonl" => Ok(build_json_sink(props, from_view)),
         "snk.s3" | "snk.gcs" | "snk.azureblob" => Ok(build_cloud_sink(props, from_view)),
         "snk.sqlite" | "snk.duckdb" => Ok(build_db_sink(props, from_view)),
+        "snk.postgres" => build_pg_sink(props, from_view),
         other => Err(EngineError::Unsupported(format!(
             "Sink '{}' is not yet implemented",
             other

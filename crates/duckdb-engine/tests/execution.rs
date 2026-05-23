@@ -1213,6 +1213,73 @@ fn merge_streams_concatenates_inputs() {
     assert_eq!(count(&format!("read_csv_auto('{}')", out)), 4);
 }
 
+/// Read the PostgreSQL connection details from env. Returns None to
+/// skip when the test isn't running with a real PG service available
+/// (i.e. anywhere except the CI postgres-integration job).
+fn pg_env() -> Option<(String, u64, String, String, String)> {
+    let host = std::env::var("DUCKLE_PG_HOST").ok()?;
+    let port = std::env::var("DUCKLE_PG_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5432);
+    let db = std::env::var("DUCKLE_PG_DB").unwrap_or_else(|_| "postgres".into());
+    let user = std::env::var("DUCKLE_PG_USER").unwrap_or_else(|_| "postgres".into());
+    let pass = std::env::var("DUCKLE_PG_PASS").unwrap_or_default();
+    Some((host, port, db, user, pass))
+}
+
+#[test]
+fn pg_sink_then_source_roundtrip() {
+    let engine = engine_or_skip!();
+    let (host, port, db, user, pass) = match pg_env() {
+        Some(x) => x,
+        None => {
+            eprintln!("skipping: set DUCKLE_PG_HOST to run against a real PostgreSQL");
+            return;
+        }
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,alice\n2,bob\n3,carol\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let table = format!("duckle_test_{}", std::process::id());
+
+    // Write csv -> snk.postgres.
+    let write_doc = doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("w", "snk.postgres", json!({
+                "host": host, "port": port, "database": db,
+                "user": user, "password": pass,
+                "schemaName": "public", "tableName": table, "mode": "overwrite"
+            })),
+        ]),
+        json!([main_edge("e", "s", "w")]),
+    );
+    let r1 = engine.execute_pipeline(&write_doc);
+    assert_eq!(r1.status, "ok", "write failed: {:?}", r1.error);
+
+    // Read back from PG via src.postgres into a CSV file.
+    let read_doc = doc(
+        json!([
+            node("r", "src.postgres", json!({
+                "host": host, "port": port, "database": db,
+                "user": user, "password": pass,
+                "schemaName": "public", "tableName": table, "mode": "table"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e", "r", "k")]),
+    );
+    let r2 = engine.execute_pipeline(&read_doc);
+    assert_eq!(r2.status, "ok", "read failed: {:?}", r2.error);
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 3);
+    let name = scalar_string(&format!(
+        "SELECT name FROM read_csv_auto('{}') WHERE id = 2",
+        out
+    ));
+    assert_eq!(name, "bob", "got {}", name);
+}
+
 #[test]
 fn missing_source_file_errors_cleanly() {
     let tmp = tempfile::tempdir().unwrap();

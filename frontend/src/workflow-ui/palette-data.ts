@@ -101,7 +101,7 @@ export const PALETTE: Category[] = [
                 id: 'src.databases',
                 label: 'Databases',
                 components: [
-                    src('postgres', 'PostgreSQL', 'planned'),
+                    src('postgres', 'PostgreSQL', 'available', 'Read from PostgreSQL via the DuckDB postgres extension'),
                     src('mysql', 'MySQL', 'planned'),
                     src('mariadb', 'MariaDB', 'planned'),
                     src('sqlserver', 'SQL Server', 'planned'),
@@ -413,7 +413,7 @@ export const PALETTE: Category[] = [
                 id: 'snk.databases',
                 label: 'Databases',
                 components: [
-                    snk('postgres', 'PostgreSQL', 'planned'),
+                    snk('postgres', 'PostgreSQL', 'available', 'Write to PostgreSQL via the DuckDB postgres extension'),
                     snk('mysql', 'MySQL', 'planned'),
                     snk('sqlserver', 'SQL Server', 'planned'),
                     snk('oracle', 'Oracle', 'planned'),
