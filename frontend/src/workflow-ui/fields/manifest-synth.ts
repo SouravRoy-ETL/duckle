@@ -2185,6 +2185,47 @@ function synthVectorSource(comp: ComponentDef): ComponentManifest {
 
 function synthAiTransform(comp: ComponentDef): ComponentManifest {
     const id = comp.id;
+    if (id === 'xf.ai.text_search') {
+        return base(comp, [
+            {
+                label: 'Full-text search',
+                fields: [
+                    {
+                        key: 'idColumn',
+                        label: 'ID column',
+                        kind: 'column',
+                        required: true,
+                        description: 'Unique row identifier; required by the BM25 index.',
+                    },
+                    {
+                        key: 'textColumns',
+                        label: 'Text columns to index',
+                        kind: 'columns',
+                        required: true,
+                    },
+                    {
+                        key: 'query',
+                        label: 'Search query',
+                        kind: 'text',
+                        required: true,
+                        placeholder: 'duckdb analytics',
+                    },
+                    {
+                        key: 'topK',
+                        label: 'Top K',
+                        kind: 'integer',
+                        description: 'Optional: keep only the K highest-scoring rows.',
+                    },
+                    {
+                        key: 'outputColumn',
+                        label: 'Score column',
+                        kind: 'text',
+                        defaultValue: 'score',
+                    },
+                ],
+            },
+        ], 'upstream');
+    }
     if (id === 'xf.ai.vector_search') {
         return base(comp, [
             {

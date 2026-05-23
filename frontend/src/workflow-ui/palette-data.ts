@@ -387,6 +387,7 @@ export const PALETTE: Category[] = [
                     xf('ai.classify', 'Classify', 'preview', 'Label rows with a model'),
                     xf('ai.dedupe', 'Semantic Dedupe', 'preview', 'Drop near-duplicate rows'),
                     xf('ai.vector_search', 'Vector Similarity Search', 'available', 'Rank rows by similarity to a query vector via DuckDB vss'),
+                    xf('ai.text_search', 'Full-Text Search', 'available', 'BM25 keyword search over text columns via DuckDB fts'),
                 ],
             },
             {

@@ -2006,6 +2006,38 @@ fn spatial_source_reads_geojson() {
 }
 
 #[test]
+fn text_search_ranks_by_bm25() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "in.csv",
+        "id,body\n1,duck duck goose\n2,the quick brown fox\n3,duckdb is fast for analytics\n",
+    );
+    let out = out_path(tmp.path(), "out.csv");
+    let d = doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("t", "xf.ai.text_search", json!({
+                "idColumn": "id",
+                "textColumns": ["body"],
+                "query": "duck",
+                "outputColumn": "score"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "t"), main_edge("e2", "t", "k")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "text_search failed: {:?}", result.error);
+    // BM25 tokenization means 'duck' matches 'duck duck goose' but not
+    // 'duckdb' (different token). So exactly one row.
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 1);
+    let body = scalar_string(&format!("SELECT body FROM read_csv_auto('{}')", out));
+    assert!(body.contains("duck duck goose"), "got {}", body);
+}
+
+#[test]
 fn missing_source_file_errors_cleanly() {
     let tmp = tempfile::tempdir().unwrap();
     let out = out_path(tmp.path(), "never.parquet");

@@ -407,6 +407,16 @@ fn build_stage(
             EngineError::Config(format!("{} ({} / {}): {}", node.data.label, component_id, node.id, e))
         })?;
         (format!("{}{}", attach, sql), StageKind::View, None)
+    } else if component_id == "xf.ai.text_search" {
+        // Full-Text Search needs a stable named table for
+        // create_fts_index, so we materialize the upstream into a temp
+        // table, build the BM25 index on it, then SELECT through the
+        // index. Multi-statement, so it bypasses the standard view
+        // wrapping and emits its own CREATE TABLE for node.id.
+        let sql = build_text_search(&node.id, inputs, &props).map_err(|e| {
+            EngineError::Config(format!("{} ({} / {}): {}", node.data.label, component_id, node.id, e))
+        })?;
+        (format!("{}{}", attach, sql), StageKind::View, None)
     } else {
         let body = build_view_sql(component_id, &props, inputs).map_err(|e| {
             EngineError::Config(format!("{} ({} / {}): {}", node.data.label, component_id, node.id, e))
@@ -2445,6 +2455,8 @@ fn attach_prelude(component_id: &str, props: &JsonValue) -> String {
         // Vector Similarity Search uses the vss extension's array_*
         // distance functions; LOAD before the SELECT runs.
         "xf.ai.vector_search" => return "LOAD vss; ".into(),
+        // Full-Text Search uses the fts extension's match_bm25.
+        "xf.ai.text_search" => return "LOAD fts; ".into(),
         // Spatial is GDAL-backed and ~50 MB; deliberately kept out of
         // the first-launch DUCKDB_EXTENSIONS pre-fetch so the install
         // stays small. INSTALL runs lazily on first use, then LOAD on
@@ -2645,6 +2657,75 @@ fn build_db_sink(props: &JsonValue, from_view: &str) -> String {
 fn build_avro_source(props: &JsonValue) -> String {
     let path = string_prop(props, "path").unwrap_or_default();
     format!("SELECT * FROM read_avro('{}')", sql_escape(&path))
+}
+
+/// Full-Text Search via the DuckDB fts extension. The extension's
+/// API (PRAGMA create_fts_index + a per-table fts_main_<table>.match_bm25
+/// function) needs a named table to index, so this materializes the
+/// upstream into a temp table, builds the BM25 index on it, then
+/// produces `<node>` with the original columns + a score column.
+/// Optionally limits to the top-K matches.
+fn build_text_search(node_id: &str, inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs
+        .main()
+        .ok_or_else(|| missing_input_msg("xf.ai.text_search"))?;
+    let id_col = string_prop(props, "idColumn")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Text Search needs an id column (unique per row)".to_string())?;
+    let text_cols = columns_list(props, "textColumns");
+    if text_cols.is_empty() {
+        return Err("Text Search needs at least one text column to index".to_string());
+    }
+    let query = string_prop(props, "query")
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Text Search needs a query string".to_string())?;
+    let top_k = props
+        .get("topK")
+        .and_then(|v| v.as_u64())
+        .filter(|k| *k > 0);
+    let output = string_prop(props, "outputColumn")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "score".into());
+
+    // Sanitized temp-table suffix from the node id (table names must
+    // be valid SQL identifiers; the upstream node id may not be).
+    let suffix: String = node_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let temp_table = format!("_fts_{}", suffix);
+    let index_schema = format!("fts_main_{}", temp_table);
+
+    let text_args = text_cols
+        .iter()
+        .map(|c| format!("'{}'", c.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let match_expr = format!(
+        "{}.match_bm25({}, '{}')",
+        index_schema,
+        quote_ident(&id_col),
+        query.replace('\'', "''")
+    );
+    let order_limit = match top_k {
+        Some(k) => format!(" ORDER BY {} DESC LIMIT {}", quote_ident(&output), k),
+        None => String::new(),
+    };
+    Ok(format!(
+        "DROP TABLE IF EXISTS {temp}; \
+         CREATE TEMP TABLE {temp} AS SELECT * FROM {up}; \
+         PRAGMA create_fts_index('{temp_raw}', '{id_col}', {text_args}); \
+         CREATE OR REPLACE TABLE {node} AS \
+           SELECT *, {match} AS {out} FROM {temp} \
+           WHERE {match} IS NOT NULL{order_limit}",
+        temp = quote_ident(&temp_table),
+        temp_raw = temp_table,
+        up = quote_ident(upstream),
+        id_col = id_col,
+        node = quote_ident(node_id),
+        match = match_expr,
+        out = quote_ident(&output),
+    ))
 }
 
 /// Vector Similarity Search via the DuckDB vss extension. Adds a
