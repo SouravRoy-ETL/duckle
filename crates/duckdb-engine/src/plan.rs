@@ -3048,8 +3048,19 @@ fn build_assert(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("Assertion violated: {}", predicate));
     let msg = sql_escape(&raw_msg);
+    // Aggregate the predicate into a single boolean across the whole
+    // input via bool_and, then evaluate one CASE in a MATERIALIZED CTE.
+    // This pattern (rather than a per-row CASE in the projection) is the
+    // only shape DuckDB reliably keeps - the optimizer prunes unused
+    // projection columns even when their CASE has error() in the ELSE,
+    // which on some platforms (notably Windows release builds in CI)
+    // means the assertion silently never fires. The aggregate has no
+    // such hiding place; bool_and is forced to scan every row, and the
+    // outer SELECT uses the CTE's value in WHERE so the CTE is
+    // genuinely materialized. COALESCE(..., TRUE) treats an empty
+    // input as a pass (vacuously true).
     Ok(format!(
-        "SELECT * EXCLUDE (_duckle_assert) FROM (SELECT u.*, CASE WHEN ({pred}) THEN NULL ELSE error('{msg}') END AS _duckle_assert FROM {up} u)",
+        "WITH _duckle_assert AS MATERIALIZED (SELECT CASE WHEN COALESCE(bool_and(CAST(({pred}) AS BOOLEAN)), TRUE) THEN 'ok' ELSE error('{msg}') END AS result FROM {up}) SELECT u.* FROM {up} u WHERE (SELECT result FROM _duckle_assert) IS NOT NULL",
         pred = predicate,
         msg = msg,
         up = quote_ident(upstream)
