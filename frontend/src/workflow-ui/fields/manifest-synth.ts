@@ -651,6 +651,25 @@ function fileFormatSection(comp: ComponentDef): FormSection[] {
 }
 
 function synthLakehouseSource(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'src.ducklake') {
+        // DuckLake attaches a catalog (path) and then names a specific
+        // table inside it.
+        return base(comp, [
+            {
+                label: 'Catalog',
+                fields: [
+                    { key: 'path', label: 'Catalog path', kind: 'text', required: true, placeholder: '/var/lakes/catalog.duckdb', description: 'Path to the DuckLake catalog file (DuckDB-format).' },
+                ],
+            },
+            {
+                label: 'Table',
+                fields: [
+                    { key: 'schemaName', label: 'Schema', kind: 'text', defaultValue: 'main' },
+                    { key: 'tableName', label: 'Table', kind: 'text', required: true, placeholder: 'orders' },
+                ],
+            },
+        ]);
+    }
     // Iceberg + Delta both take a path to the table location: a local
     // directory containing the metadata + data files, or an `s3://...`
     // URL backed by a cloud SECRET configured under Connections.
@@ -672,6 +691,34 @@ function synthLakehouseSource(comp: ComponentDef): ComponentManifest {
 }
 
 function synthLakehouseSink(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'snk.ducklake') {
+        return base(comp, [
+            {
+                label: 'Catalog',
+                fields: [
+                    { key: 'path', label: 'Catalog path', kind: 'text', required: true, placeholder: '/var/lakes/catalog.duckdb' },
+                ],
+            },
+            {
+                label: 'Destination',
+                fields: [
+                    { key: 'schemaName', label: 'Schema', kind: 'text', defaultValue: 'main' },
+                    { key: 'tableName', label: 'Table', kind: 'text', required: true, placeholder: 'orders' },
+                    {
+                        key: 'mode',
+                        label: 'Write mode',
+                        kind: 'select',
+                        defaultValue: 'overwrite',
+                        options: [
+                            { label: 'Create or replace', value: 'overwrite' },
+                            { label: 'Append (insert)', value: 'append' },
+                            { label: 'Truncate + insert', value: 'truncate' },
+                        ],
+                    },
+                ],
+            },
+        ], 'upstream');
+    }
     // Same shape as the source: a table-root path. The driver lives in
     // the component id (iceberg / delta).
     return base(comp, [

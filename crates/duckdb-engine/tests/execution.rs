@@ -2157,6 +2157,40 @@ fn iceberg_sink_writes_then_source_reads() {
 }
 
 #[test]
+fn ducklake_sink_then_source_roundtrip() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,alice\n2,bob\n3,carol\n");
+    let catalog = out_path(tmp.path(), "lake.duckdb");
+
+    // csv -> snk.ducklake creates the catalog and writes 'orders' table.
+    let r1 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("w", "snk.ducklake", json!({
+                "path": catalog, "schemaName": "main", "tableName": "orders", "mode": "overwrite"
+            })),
+        ]),
+        json!([main_edge("e", "s", "w")]),
+    ));
+    assert_eq!(r1.status, "ok", "ducklake write failed: {:?}", r1.error);
+
+    // src.ducklake reads the table back.
+    let out = out_path(tmp.path(), "out.csv");
+    let r2 = engine.execute_pipeline(&doc(
+        json!([
+            node("r", "src.ducklake", json!({
+                "path": catalog, "schemaName": "main", "tableName": "orders", "mode": "table"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e", "r", "k")]),
+    ));
+    assert_eq!(r2.status, "ok", "ducklake read failed: {:?}", r2.error);
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 3);
+}
+
+#[test]
 fn missing_source_file_errors_cleanly() {
     let tmp = tempfile::tempdir().unwrap();
     let out = out_path(tmp.path(), "never.parquet");

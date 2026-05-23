@@ -104,6 +104,7 @@ export const PALETTE: Category[] = [
                 components: [
                     src('iceberg', 'Apache Iceberg', 'available', 'Read Iceberg tables via DuckDB iceberg_scan'),
                     src('delta', 'Delta Lake', 'available', 'Read Delta Lake tables via DuckDB delta_scan'),
+                    src('ducklake', 'DuckLake', 'available', 'Read tables from a DuckLake catalog (DuckDB native lakehouse)'),
                 ],
             },
             {
@@ -426,6 +427,7 @@ export const PALETTE: Category[] = [
                 label: 'Lakehouse table formats',
                 components: [
                     snk('iceberg', 'Apache Iceberg', 'available', 'Write a full Iceberg table (data/ + metadata/) via DuckDB v1.5'),
+                    snk('ducklake', 'DuckLake', 'available', 'Write a table into a DuckLake catalog'),
                 ],
             },
             {

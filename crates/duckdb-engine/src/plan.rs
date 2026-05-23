@@ -523,7 +523,7 @@ fn build_view_sql(
             Ok(build_cloud_source(scheme, props))
         }
         "src.postgres" | "src.cockroach" | "src.mysql" | "src.mariadb"
-        | "src.motherduck" => build_relational_source(component_id, props),
+        | "src.motherduck" | "src.ducklake" => build_relational_source(component_id, props),
         "src.avro" => Ok(build_avro_source(props)),
         "src.excel" => Ok(build_excel_source(props)),
         "src.iceberg" => Ok(build_iceberg_source(props)),
@@ -2465,6 +2465,8 @@ fn attach_prelude(component_id: &str, props: &JsonValue) -> String {
         "snk.mysql" | "snk.mariadb" => return db_attach(props, "mysql", 3306, false),
         "src.motherduck" => return md_attach(props, true),
         "snk.motherduck" => return md_attach(props, false),
+        "src.ducklake" => return ducklake_attach(props, true),
+        "snk.ducklake" => return ducklake_attach(props, false),
         // snk.excel + snk.spatial both COPY through DuckDB extensions; LOAD
         // is enough since the install paths pre-fetched them (spatial is
         // the lazy one and still INSTALLs on first use too).
@@ -2631,7 +2633,7 @@ fn relational_qualified(alias: &str, component_id: &str, schema: Option<&str>, t
         || component_id.ends_with(".cockroach")
     {
         Some("public")
-    } else if component_id.ends_with(".motherduck") {
+    } else if component_id.ends_with(".motherduck") || component_id.ends_with(".ducklake") {
         Some("main")
     } else {
         None // MySQL / MariaDB: skip the schema layer unless given
@@ -2641,6 +2643,27 @@ fn relational_qualified(alias: &str, component_id: &str, schema: Option<&str>, t
         (None, Some(d)) => format!("{}.{}.{}", alias, quote_ident(d), quote_ident(table)),
         (None, None) => format!("{}.{}", alias, quote_ident(table)),
     }
+}
+
+/// DuckLake ATTACH. DuckLake is DuckDB's own lakehouse format (a
+/// catalog stored in a DuckDB file or Postgres pointing at parquet
+/// data files). The form's `path` is the catalog path.
+fn ducklake_attach(props: &JsonValue, read_only: bool) -> String {
+    let path = match string_prop(props, "path").filter(|s| !s.is_empty()) {
+        Some(p) => p,
+        None => return String::new(),
+    };
+    let (alias, mode) = if read_only {
+        ("duckle_src", " (READ_ONLY)")
+    } else {
+        ("duckle_dst", "")
+    };
+    format!(
+        "INSTALL ducklake; LOAD ducklake; ATTACH 'ducklake:{}' AS {}{}; ",
+        sql_escape(&path),
+        alias,
+        mode
+    )
 }
 
 /// MotherDuck ATTACH. MotherDuck support is built into DuckDB itself
@@ -2957,7 +2980,7 @@ fn build_sink_sql(
         "snk.s3" | "snk.gcs" | "snk.azureblob" => Ok(build_cloud_sink(props, from_view)),
         "snk.sqlite" | "snk.duckdb" => Ok(build_db_sink(props, from_view)),
         "snk.postgres" | "snk.cockroach" | "snk.mysql" | "snk.mariadb"
-        | "snk.motherduck" => build_relational_sink(component_id, props, from_view),
+        | "snk.motherduck" | "snk.ducklake" => build_relational_sink(component_id, props, from_view),
         "snk.excel" => Ok(build_excel_sink(props, from_view)),
         "snk.spatial" => Ok(build_spatial_sink(props, from_view)),
         "snk.iceberg" => Ok(build_iceberg_sink(props, from_view)),

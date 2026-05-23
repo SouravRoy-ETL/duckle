@@ -139,8 +139,9 @@ const DUCKDB_EXTENSIONS: &[&str] = &[
     "postgres", // PostgreSQL ATTACH
     "mysql",    // MySQL / MariaDB ATTACH
     "excel",    // .xlsx reader
-    "iceberg",  // Apache Iceberg table scan
+    "iceberg",  // Apache Iceberg table scan + write (v1.5+)
     "delta",    // Delta Lake table scan
+    "ducklake", // DuckLake: DuckDB-native lakehouse catalog
     "vss",      // Vector similarity search (array_* distance funcs)
     "fts",      // Full-text search (BM25 keyword scoring)
     // The avro community extension hasn't published for v1.4+ yet; src.avro
