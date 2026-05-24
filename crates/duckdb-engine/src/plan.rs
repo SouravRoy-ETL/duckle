@@ -69,6 +69,9 @@ pub struct Stage {
     /// pagination), parses the response, and materializes the row
     /// objects as a DuckDB table.
     pub rest_source: Option<RestSourceSpec>,
+    /// Elasticsearch / OpenSearch _search source. Paginated via
+    /// from+size; rows come from hits.hits[]._source.
+    pub elastic_source: Option<ElasticSourceSpec>,
     /// Milliseconds the executor sleeps before running this stage.
     /// Set by ctl.wait and ctl.throttle. None = no delay.
     pub wait_ms: Option<u64>,
@@ -144,6 +147,30 @@ pub struct SnowflakeSourceSpec {
     pub warehouse: Option<String>,
     pub role: Option<String>,
     pub query: String,
+}
+
+/// src.elastic / src.opensearch: read from Elasticsearch-compatible
+/// _search APIs. Both vendors share the same wire protocol, so they
+/// ride one executor. Pagination is from+size (default 1000 rows
+/// per page); the engine stops when a page returns fewer than `size`
+/// hits or `max_pages` is reached. Beyond 10,000 rows users need
+/// `search_after` (follow-up commit).
+#[derive(Debug, Clone)]
+pub struct ElasticSourceSpec {
+    pub node_id: String,
+    /// Cluster endpoint, e.g. "https://my-cluster.es.cloud.es.io".
+    pub endpoint: String,
+    /// Index pattern (single index, comma-separated list, or wildcard).
+    pub index: String,
+    /// Optional API key for `Authorization: ApiKey <key>`.
+    pub api_key: Option<String>,
+    /// Raw Elasticsearch query DSL. Empty / None = `{"match_all": {}}`.
+    pub query: Option<String>,
+    /// Page size (default 1000). from+size pagination assumes <= 10000
+    /// total rows; for larger result sets the user should adjust the
+    /// index's max_result_window or switch to a chunked LIMIT query.
+    pub size: u64,
+    pub max_pages: u64,
 }
 
 /// src.rest: generic HTTP-API source. Fetches a URL, parses the JSON
@@ -548,6 +575,7 @@ fn build_stage(
     let mut snowflake_source: Option<SnowflakeSourceSpec> = None;
     let mut databricks_source: Option<DatabricksSourceSpec> = None;
     let mut rest_source: Option<RestSourceSpec> = None;
+    let mut elastic_source: Option<ElasticSourceSpec> = None;
     let mut wait_ms: Option<u64> = None;
     // Advanced settings (universal across components, written by the
     // Properties Panel's Advanced tab). Engine honours them per stage.
@@ -1010,6 +1038,33 @@ fn build_stage(
             ),
         };
         (copy, StageKind::Sink, Some(from_view.to_string()))
+    } else if component_id == "src.elastic" || component_id == "src.opensearch" {
+        // Elasticsearch / OpenSearch _search source. Form: endpoint,
+        // index, apiKey, query (raw JSON DSL), size.
+        let endpoint = string_prop(&props, "endpoint")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: endpoint required", component_id)))?;
+        let index = string_prop(&props, "index")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: index required", component_id)))?;
+        elastic_source = Some(ElasticSourceSpec {
+            node_id: node.id.clone(),
+            endpoint,
+            index,
+            api_key: string_prop(&props, "apiKey").filter(|s| !s.is_empty()),
+            query: string_prop(&props, "query").filter(|s| !s.trim().is_empty()),
+            size: props
+                .get("size")
+                .and_then(|v| v.as_u64())
+                .filter(|n| *n > 0)
+                .unwrap_or(1000),
+            max_pages: props
+                .get("maxPages")
+                .and_then(|v| v.as_u64())
+                .filter(|n| *n > 0)
+                .unwrap_or(100),
+        });
+        (String::new(), StageKind::View, None)
     } else if component_id == "src.rest" {
         // Generic REST source. URL is required; everything else is
         // optional. Form's authType maps to a header (same as snk.rest).
@@ -1213,6 +1268,7 @@ fn build_stage(
         snowflake_source,
         databricks_source,
         rest_source,
+        elastic_source,
         wait_ms,
         retry_attempts,
         retry_backoff_ms,

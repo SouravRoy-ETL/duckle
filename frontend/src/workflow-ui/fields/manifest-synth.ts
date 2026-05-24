@@ -1492,6 +1492,34 @@ function synthApiSink(comp: ComponentDef): ComponentManifest {
 }
 
 function synthNoSqlSource(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'src.elastic' || comp.id === 'src.opensearch') {
+        const vendor = comp.id === 'src.elastic' ? 'Elasticsearch' : 'OpenSearch';
+        return base(comp, [
+            {
+                label: `${vendor} cluster`,
+                fields: [
+                    { key: 'endpoint', label: 'Cluster endpoint', kind: 'text', required: true, placeholder: 'https://my-cluster.es.cloud.es.io' },
+                    { key: 'index', label: 'Index (or pattern)', kind: 'text', required: true, placeholder: 'docs' },
+                    { key: 'apiKey', label: 'API key', kind: 'text', placeholder: '••••••••' },
+                ],
+            },
+            {
+                label: 'Query',
+                fields: [
+                    {
+                        key: 'query',
+                        label: 'Query DSL (raw JSON)',
+                        kind: 'textarea',
+                        rows: 4,
+                        placeholder: '{"match": {"status": "active"}}',
+                        description: 'Body of the `query` field in the _search request. Empty = {"match_all": {}}.',
+                    },
+                    { key: 'size', label: 'Page size', kind: 'integer', defaultValue: 1000 },
+                    { key: 'maxPages', label: 'Max pages (safety cap)', kind: 'integer', defaultValue: 100 },
+                ],
+            },
+        ]);
+    }
     return base(comp, [
         {
             label: 'Connection',

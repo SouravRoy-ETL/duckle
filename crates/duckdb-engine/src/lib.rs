@@ -28,8 +28,8 @@ pub mod plan;
 pub use history::{append_run_record, load_run_history, RunRecord};
 pub use plan::{CompiledPipeline, PipelineDoc, Stage, StageKind};
 use plan::{
-    DatabricksSinkSpec, DatabricksSourceSpec, RestSourceSpec, SnowflakeAuth, SnowflakeSinkSpec,
-    SnowflakeSourceSpec, WebhookSpec,
+    DatabricksSinkSpec, DatabricksSourceSpec, ElasticSourceSpec, RestSourceSpec, SnowflakeAuth,
+    SnowflakeSinkSpec, SnowflakeSourceSpec, WebhookSpec,
 };
 
 #[derive(Debug, Error)]
@@ -360,6 +360,10 @@ impl DuckdbEngine {
                     // Generic HTTP source: fetch URL, walk response_path,
                     // follow cursor pagination, materialize as table.
                     self.run_rest_source(&db_path, spec)
+                } else if let Some(spec) = stage.elastic_source.as_ref() {
+                    // Elasticsearch / OpenSearch _search source with
+                    // from+size pagination.
+                    self.run_elastic_source(&db_path, spec)
                 } else if let Some(spec) = stage.upsert.as_ref() {
                     // Relational-DB upsert: DESCRIBE the upstream first to
                     // get the column list, then assemble INSERT ... ON
@@ -783,6 +787,93 @@ impl DuckdbEngine {
         Ok(format!(
             "snowflake: inserted {} rows into {}",
             total_inserted, spec.table
+        ))
+    }
+
+    /// Elasticsearch / OpenSearch _search source. POSTs the query DSL
+    /// to {endpoint}/{index}/_search with from+size pagination,
+    /// extracts hits.hits[]._source from each page, and materializes
+    /// the accumulated row objects. Stops when a page returns fewer
+    /// than `size` hits (no more data) or max_pages is hit.
+    fn run_elastic_source(
+        &self,
+        db: &Path,
+        spec: &ElasticSourceSpec,
+    ) -> Result<String, EngineError> {
+        let url = format!(
+            "{}/{}/_search",
+            spec.endpoint.trim_end_matches('/'),
+            spec.index
+        );
+        let query_dsl: JsonValue = match &spec.query {
+            Some(q) => serde_json::from_str(q).map_err(|e| {
+                EngineError::Config(format!("elastic: invalid query JSON: {}", e))
+            })?,
+            None => serde_json::json!({ "match_all": {} }),
+        };
+        let mut all_rows: Vec<JsonValue> = Vec::new();
+        let mut from = 0_u64;
+        let mut pages = 0_u64;
+        loop {
+            let body = serde_json::json!({
+                "query": query_dsl,
+                "size": spec.size,
+                "from": from,
+            });
+            let body_str = serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
+            let mut req = ureq::post(&url)
+                .set("Content-Type", "application/json")
+                .set("Accept", "application/json");
+            if let Some(key) = &spec.api_key {
+                req = req.set("Authorization", &format!("ApiKey {}", key));
+            }
+            let resp = match req.send_string(&body_str) {
+                Ok(r) => r,
+                Err(ureq::Error::Status(code, r)) => {
+                    let body = r.into_string().unwrap_or_default();
+                    return Err(EngineError::Query(format!(
+                        "Elastic HTTP {} from {}: {}",
+                        code,
+                        url,
+                        body.chars().take(300).collect::<String>()
+                    )));
+                }
+                Err(e) => {
+                    return Err(EngineError::Query(format!(
+                        "Elastic HTTP transport to {}: {}",
+                        url, e
+                    )));
+                }
+            };
+            let response: JsonValue = resp.into_json().map_err(|e| {
+                EngineError::Query(format!("Elastic response not JSON: {}", e))
+            })?;
+            let hits = response
+                .pointer("/hits/hits")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let hit_count = hits.len();
+            for h in hits {
+                let source = h
+                    .get("_source")
+                    .cloned()
+                    .unwrap_or(JsonValue::Object(Default::default()));
+                all_rows.push(source);
+            }
+            pages += 1;
+            // Stop when we got fewer than `size` (last page) or hit cap.
+            if (hit_count as u64) < spec.size || pages >= spec.max_pages {
+                break;
+            }
+            from = from.saturating_add(spec.size);
+        }
+        materialize_jsonobjects_as_table(db, &spec.node_id, &all_rows)?;
+        Ok(format!(
+            "elastic: materialized {} rows ({} page(s)) into {}",
+            all_rows.len(),
+            pages,
+            spec.node_id
         ))
     }
 

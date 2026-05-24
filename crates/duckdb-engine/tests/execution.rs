@@ -2444,6 +2444,90 @@ fn text_reverse_repeat_and_compare() {
 }
 
 #[test]
+fn src_elastic_paginates_via_from_size() {
+    // Two pages of size=2 each. The first returns hits = [a, b],
+    // the second returns [c] (last page = fewer than size = stop).
+    // Verify 3 rows materialized, 2 HTTP requests, and the engine
+    // sent `from`: 0 and `from`: 2 in the two request bodies.
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let engine = engine_or_skip!();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+
+    let page1 = br#"{"hits":{"hits":[{"_source":{"id":1,"name":"alice"}},{"_source":{"id":2,"name":"bob"}}]}}"#;
+    let page2 = br#"{"hits":{"hits":[{"_source":{"id":3,"name":"carol"}}]}}"#;
+    let req_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let rc = req_count.clone();
+    let cap = captured.clone();
+
+    let handle = std::thread::spawn(move || {
+        for stream in listener.incoming().take(2) {
+            let mut stream = match stream { Ok(s) => s, Err(_) => break };
+            stream.set_read_timeout(Some(Duration::from_millis(250))).ok();
+            stream.set_nodelay(true).ok();
+            let mut buf = Vec::with_capacity(8192);
+            let mut chunk = [0u8; 4096];
+            for _ in 0..16 {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            cap.lock().unwrap().push(String::from_utf8_lossy(&buf).to_string());
+            let idx = rc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let body: &[u8] = if idx == 0 { page1 } else { page2 };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(body);
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = out_path(tmp.path(), "out.csv");
+    let endpoint = format!("http://127.0.0.1:{}", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("e", "src.elastic", json!({
+                "endpoint": endpoint,
+                "index": "docs",
+                "size": 2,
+                "apiKey": "test-key"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "e", "k")]),
+    ));
+    let _ = handle.join();
+    assert_eq!(r.status, "ok", "src.elastic failed: {:?}", r.error);
+    assert_eq!(
+        req_count.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "expected 2 HTTP requests (initial + page 2)"
+    );
+    let n = count(&format!("read_csv_auto('{}')", out));
+    assert_eq!(n, 3, "expected 3 rows across pages, got {}", n);
+    let reqs = captured.lock().unwrap();
+    // Both requests should hit the /docs/_search path; the first carries
+    // from=0, the second from=2.
+    assert!(reqs[0].contains("/docs/_search"), "expected /_search URL: {}", reqs[0].lines().next().unwrap_or(""));
+    assert!(reqs[0].contains(r#""from":0"#), "expected from=0: {}", reqs[0]);
+    assert!(reqs[1].contains(r#""from":2"#), "expected from=2: {}", reqs[1]);
+    assert!(reqs[0].contains("ApiKey test-key"), "expected ApiKey header: {}", reqs[0]);
+}
+
+#[test]
 fn src_rest_fetches_and_walks_cursor_pages() {
     // First response: 2 rows under /data + cursor=p2; engine GETs the
     // next page (also 2 rows, no further cursor). Total 4 rows expected,
