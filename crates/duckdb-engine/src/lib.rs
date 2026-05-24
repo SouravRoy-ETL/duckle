@@ -1012,9 +1012,12 @@ impl DuckdbEngine {
         _spec: &OracleSinkSpec,
     ) -> Result<String, EngineError> {
         Err(EngineError::Config(
-            "snk.oracle: this Duckle binary was built without Oracle support. \
-             Rebuild with `cargo build --features oracle` (requires Oracle \
-             Instant Client installed on the build + runtime hosts)."
+            "snk.oracle: this Duckle binary was built without the default \
+             `oracle` feature. Default builds include Oracle support; if \
+             you're seeing this, rebuild with `cargo build --release` (no \
+             --no-default-features). At runtime users still need Oracle \
+             Instant Client (libclntsh.so / OCI.dll / libclntsh.dylib) on \
+             the library path."
                 .into(),
         ))
     }
@@ -1077,9 +1080,8 @@ impl DuckdbEngine {
         _spec: &OracleSourceSpec,
     ) -> Result<String, EngineError> {
         Err(EngineError::Config(
-            "src.oracle: this Duckle binary was built without Oracle support. \
-             Rebuild with `cargo build --features oracle` (requires Oracle \
-             Instant Client installed on the build + runtime hosts)."
+            "src.oracle: this Duckle binary was built without the default \
+             `oracle` feature. Default builds include Oracle support."
                 .into(),
         ))
     }

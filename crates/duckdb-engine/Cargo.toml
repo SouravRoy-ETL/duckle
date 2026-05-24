@@ -44,15 +44,16 @@ futures-util = "0.3"
 # Cassandra / ScyllaDB via the pure-Rust scylla driver (also speaks
 # CQL to Cassandra). Async; same block_on pattern as mongo + sqlserver.
 scylla = "0.13"
-# Oracle support is opt-in. The `oracle` crate links against Oracle
-# Instant Client - a vendor C library that has to be installed on the
-# build host AND the runtime host. Default builds (and CI) skip it;
-# users who need Oracle install Instant Client + build with
-# `--features oracle`.
+# Oracle support. The `oracle` crate uses ODPI-C (statically compiled
+# from C source at build time) which dynamically loads Oracle Instant
+# Client at RUNTIME via dlopen. Build is self-contained on every OS;
+# users just need Oracle Instant Client (libclntsh.{so,dll,dylib}) on
+# the library path when they actually connect. Default-on so the
+# shipped binary supports Oracle out of the box.
 oracle = { version = "0.6", optional = true }
 
 [features]
-default = []
+default = ["oracle"]
 oracle = ["dep:oracle"]
 
 [dev-dependencies]

@@ -774,13 +774,13 @@ function synthDbSource(comp: ComponentDef): ComponentManifest {
                 ],
             },
             {
-                label: 'Build requirement',
+                label: 'Runtime requirement',
                 fields: [
                     {
-                        key: 'oracleBuildNote',
+                        key: 'oracleRuntimeNote',
                         label: 'Heads-up',
                         kind: 'text',
-                        description: 'This Duckle binary must be built with `--features oracle` and have Oracle Instant Client installed. Without the feature, runs will surface a clear error.',
+                        description: 'Oracle support is built into Duckle. Users only need Oracle Instant Client (libclntsh.so / OCI.dll / libclntsh.dylib) on the library path at runtime. If it is missing the executor surfaces a clear loader error.',
                     },
                 ],
             },
@@ -851,13 +851,13 @@ function synthDbSink(comp: ComponentDef): ComponentManifest {
                 ],
             },
             {
-                label: 'Build requirement',
+                label: 'Runtime requirement',
                 fields: [
                     {
-                        key: 'oracleBuildNote',
+                        key: 'oracleRuntimeNote',
                         label: 'Heads-up',
                         kind: 'text',
-                        description: 'This Duckle binary must be built with `--features oracle` and have Oracle Instant Client installed. Without the feature, runs will surface a clear error.',
+                        description: 'Oracle support is built into Duckle. Users only need Oracle Instant Client (libclntsh.so / OCI.dll / libclntsh.dylib) on the library path at runtime. If it is missing the executor surfaces a clear loader error.',
                     },
                 ],
             },
