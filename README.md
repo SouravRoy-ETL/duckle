@@ -4,7 +4,7 @@
 
 <h3>The local-first data studio. Drag, wire, run at native speed.</h3>
 
-<p><b>Duckle</b> is an open-source, local-first <b>ETL / ELT studio</b>: a drag-and-drop pipeline designer that compiles your canvas to SQL and runs it on your machine through DuckDB. Read from files, databases, and the cloud; reshape with 40+ transforms; land clean data in files, databases, object storage, and your AI / vector stores. Ships as a ~9 MB desktop app, no bundled database, no servers, no lock-in.</p>
+<p><b>Duckle</b> is an open-source, local-first <b>ETL / ELT studio</b>: a drag-and-drop pipeline designer that compiles your canvas to SQL and runs it on your machine through DuckDB. Read from files, databases, warehouses, SaaS APIs, NoSQL stores, message buses, and vector DBs; reshape with 50+ transforms; land clean data anywhere. Ships as a ~9 MB desktop app, no bundled database, no servers, no lock-in.</p>
 
 <p>
 <img alt="status" src="https://img.shields.io/badge/status-early%20development-orange"/>
@@ -51,11 +51,11 @@ Duckle is in **early development**. The visual designer, the DuckDB execution en
 
 **Scope, stated plainly:** Duckle is a single-machine, embedded studio. If you outgrow one box, point Duckle's output at the system that scales. It will not pretend to be a cluster.
 
-The component palette ships 240+ nodes so the roadmap is visible in the product itself. Each node is tagged by availability:
+The component palette ships **290+ nodes** so the roadmap is visible in the product itself. As of the latest engine cut: **220 available**, **15 preview**, **58 planned**. Each node is tagged by availability:
 
 - **Available** runs on the DuckDB engine today.
-- **Preview** is configurable in the designer now (drag, wire, set properties); execution is being wired engine-by-engine. This currently covers the AI and Vector / AI Database groups.
-- **Planned** is on the roadmap and reserved in the palette, not yet executable.
+- **Preview** is configurable in the designer now (drag, wire, set properties); execution is being wired engine-by-engine. This currently covers the AI transforms and some vector DB read sources.
+- **Planned** is on the roadmap and reserved in the palette, not yet executable. See [docs/roadmap.md](docs/roadmap.md) for what's left and why.
 
 The capability matrix below marks each area accordingly.
 
@@ -92,16 +92,19 @@ Duckle is not a CSV tool with extras. It reads a broad set of formats and source
 | **Lakehouse table formats** | Apache Iceberg, Delta Lake, DuckLake | Available |
 | **Embedded databases** | SQLite (read tables), DuckDB (read tables or run a query) | Available |
 | **Network relational DBs** | PostgreSQL, MySQL, MariaDB, CockroachDB | Available (live CI tests for PG + MySQL) |
-| **Network relational DBs** | SQL Server, Oracle, IBM DB2, ClickHouse, generic JDBC | Planned (need extensions DuckDB doesn't ship) |
+| **Network relational DBs** | **SQL Server** (TDS), **Oracle** (Instant Client at runtime), **ClickHouse** (HTTP API) | Available |
+| **Network relational DBs** | IBM DB2, generic JDBC | Planned |
 | **Object storage** | Amazon S3, Google Cloud Storage, Azure Blob, HTTP(S), MinIO, Cloudflare R2, Backblaze B2 | Available (live CI test for MinIO) |
 | **Cloud warehouses** | MotherDuck (DuckDB-native) | Available |
-| **Cloud warehouses** | Snowflake, BigQuery, Redshift, Databricks SQL, Synapse | Planned (need vendor SDKs) |
+| **Cloud warehouses** | **Snowflake** (SQL API + PAT/JWT auth, paginated), **BigQuery** (community extension), **Redshift** (postgres ATTACH), **Databricks SQL** (Statement Execution API + chunk follow), **Azure Synapse** (TDS) | Available |
 | **Avro files** | Apache Avro via the `avro` community extension | Preview (community extension awaiting a v1.4+ build) |
 | **Streaming** | Kafka, Pulsar, Redpanda, NATS, Kinesis, Event Hubs, Pub/Sub | Planned |
-| **APIs and SaaS** | REST, GraphQL, gRPC, plus Salesforce, HubSpot, Stripe, Notion, GitHub, and more | Planned |
-| **NoSQL and search** | MongoDB, Cassandra, Redis, DynamoDB, Elasticsearch, OpenSearch | Planned |
+| **APIs and SaaS** | **REST** (cursor / offset / page / Link header pagination), **GraphQL**. Vendor tiles: **Salesforce, HubSpot, Pipedrive, Zendesk, Intercom, Stripe, QuickBooks, Xero, Shopify, Notion, Airtable, GitHub, GitLab, Linear, Jira, Mailchimp, SendGrid, Segment** (thin pre-configured wrappers over REST/GraphQL) | Available |
+| **APIs and SaaS** | gRPC, SOAP, OData, Google Sheets, Excel Online, webhook listener, more SaaS vendors | Planned |
+| **NoSQL and search** | **MongoDB** (official driver), **Cassandra / ScyllaDB** (CQL), **Elasticsearch / OpenSearch** (from+size + search_after) | Available |
+| **NoSQL and search** | Redis, DynamoDB, CouchDB | Planned |
 | **Vector / AI databases** | **pgvector** (rides the postgres ATTACH; server needs `CREATE EXTENSION vector`) | Available |
-| **Vector / AI databases** | Pinecone, Qdrant, Weaviate, Chroma, Milvus, LanceDB | Preview (need vendor SDKs) |
+| **Vector / AI databases** | Pinecone, Qdrant, Weaviate, Chroma, Milvus, LanceDB | Preview (read paths need vendor scan endpoints; write paths shipped as sinks) |
 
 ### Transforms
 
@@ -165,16 +168,18 @@ The whole group runs today. Validators split their input: passing rows continue 
 | **Lakehouse table formats** | Apache Iceberg (full table layout), DuckLake | Available |
 | **Embedded databases** | SQLite, DuckDB (write a table) | Available |
 | **Network relational DBs** | PostgreSQL, MySQL, MariaDB, CockroachDB - write modes: **overwrite**, **append**, **truncate**, **upsert** (ON CONFLICT / ON DUPLICATE KEY UPDATE via passthrough) | Available (live CI for PG + MySQL) |
+| **Network relational DBs** | **SQL Server / Azure Synapse** (TDS, multi-row VALUES batched at 1000), **Oracle** (built-in, Instant Client at runtime; INSERT ALL idiom), **ClickHouse** (HTTP JSONEachRow) | Available |
+| **Network relational DBs** | IBM DB2, generic JDBC | Planned |
 | **Object storage** | Amazon S3, Google Cloud Storage, Azure Blob via DuckDB `httpfs` (MinIO / R2 / B2 via endpoint) | Available |
 | **Cloud warehouses** | MotherDuck | Available |
-| **Cloud warehouses** | Snowflake, BigQuery, Redshift, Databricks SQL | Planned (need vendor SDKs) |
-| **Network relational DBs** | SQL Server, Oracle, ClickHouse, generic JDBC | Planned |
-| **HTTP APIs** | **REST** (POST/PUT/PATCH a single batched JSON-array request) and **Webhook** (one POST per row, body = row JSON). Bearer / API-key auth + custom headers via the form. Uses `ureq` blocking client (~20kb dep, no tokio). Vector DB and NoSQL HTTP APIs (Pinecone, Qdrant, Weaviate, Elasticsearch upsert) ride this same plumbing - point the URL at the vendor endpoint. | Available |
-| **Streaming** | Kafka, Pulsar, NATS, Kinesis | Planned (need vendor SDKs) |
-| **GraphQL Mutation / SOAP** | (use REST sink at the GraphQL endpoint until dedicated components land) | Planned |
-| **NoSQL** | MongoDB, Redis, Elasticsearch, OpenSearch | Planned |
-| **Vector / AI databases** | **pgvector** (Postgres ATTACH; server needs `CREATE EXTENSION vector`) | Available |
-| **Vector / AI databases** | Pinecone, Qdrant, Weaviate, Chroma, Milvus, LanceDB | Preview (need vendor SDKs) |
+| **Cloud warehouses** | **Snowflake** (SQL API; PAT or JWT RS256 auth), **BigQuery** (community extension), **Redshift** (postgres ATTACH; all PG write modes), **Databricks SQL** (Statement Execution API + PAT), **Azure Synapse** (TDS) | Available |
+| **HTTP APIs** | **REST** (POST/PUT/PATCH a single batched JSON-array request) and **Webhook** (one POST per row). Bearer / API-key auth + custom headers via the form. Uses `ureq` blocking client. **GraphQL** sink for mutations. | Available |
+| **NoSQL** | **MongoDB** (official driver, insert_many batched), **Cassandra / ScyllaDB** (CQL prepared INSERT), **Elasticsearch / OpenSearch** (`_bulk` NDJSON) | Available |
+| **NoSQL** | Redis, DynamoDB | Planned |
+| **Streaming** | Kafka, Pulsar, NATS, Kinesis | Planned |
+| **SOAP** | (use REST sink at the SOAP endpoint until a dedicated component lands) | Planned |
+| **Vector / AI databases** | **pgvector** (Postgres ATTACH), **Pinecone** (`/vectors/upsert`), **Qdrant** (`/collections/{id}/points` PUT), **Weaviate** (`/v1/batch/objects`), **Milvus** (`/v1/vector/insert`) | Available |
+| **Vector / AI databases** | Chroma, LanceDB | Preview (need a vendor SDK to land dedicated handlers) |
 
 ### Control flow
 
@@ -187,7 +192,13 @@ The whole group runs today. Validators split their input: passing rows continue 
 | **Throttle** | Insert an inter-stage delay derived from a rows-per-second target. Best-effort for batch pipelines, the hook is in place for streaming. | Available |
 | **Checkpoint** | Pass rows through and also write a parquet snapshot to a path. The durable artifact a future run can read back via `src.parquet`. | Available |
 | **Dead Letter Queue** | Terminal sink for rejected rows (JSON / CSV / Parquet at a path). Conventionally wired to an upstream node's reject port. | Available |
-| **Iterate / For Each / Schedule / Try-Catch / Retry / Run Pipeline / Trigger** | Loop and nested-pipeline orchestration | Planned (need DAG-engine restructuring; orchestration crate exists for cron-style schedules) |
+| **Run Pipeline** | Inline-execute another pipeline file (`ctl.runpipeline`) - reusable sub-pipelines | Available |
+| **Iterate** | Run a sub-pipeline N times with `${ITER_INDEX}` substitution (`ctl.iterate`) | Available |
+| **For Each** | Run a sub-pipeline once per input row with `${ITER_ITEM_<FIELD>}` substitution (`ctl.foreach`) | Available |
+| **Try / Catch** | Install a fallback sub-pipeline that runs only if the wrapped stage fails (`ctl.try`) | Available |
+| **Retry** | Per-stage retry policy: configure on any stage's Advanced tab (retry_attempts + retry_backoff_ms); the `ctl.retry` tile is a visual marker for that policy | Available |
+| **Schedule** | Cron / interval / file-watch triggers via the orchestration crate (configured in the Schedule panel rather than as a graph node) | Available |
+| **Trigger** | External trigger sources (webhook listener, message bus tap) | Planned (paired with the streaming-sources work) |
 
 ### Advanced settings (per-node)
 
@@ -221,7 +232,7 @@ Models inherit the quality of their inputs. RAG indexes, embedding stores, and t
 - **Validate and filter** malformed, empty, or out-of-range records and route failures to a reject port.
 - **Normalize** types, encodings, casing, and null handling across messy sources (Standardize, Cast, regex / string transforms).
 - **Retrieve with both halves of hybrid search**, locally, no model API required: **Vector Similarity Search** (cosine / L2 / inner product over FLOAT[N] embeddings) and **Full-Text Search** (BM25 over chosen columns). Top-K supported on both.
-- **Land it in your store** - relational sinks (PostgreSQL, MySQL, MariaDB, CockroachDB) write with `upsert` (ON CONFLICT) so vector tables stay idempotent. Vector-DB API connectors (Pinecone, Qdrant, Weaviate, Chroma, Milvus, LanceDB) stay preview pending real SDK integration.
+- **Land it in your store** - relational sinks (PostgreSQL, MySQL, MariaDB, CockroachDB) write with `upsert` (ON CONFLICT) so vector tables stay idempotent. **pgvector** ships, and the major vector DBs (**Pinecone**, **Qdrant**, **Weaviate**, **Milvus**) all have working sinks that POST batches through each vendor's HTTP API.
 
 > The AI transforms that still need a model API (Embeddings, LLM Transform, Text Chunker, PII Redact, Classify, Semantic Dedupe) are **preview**: you can drag, wire, and configure them now (provider, collection, embedding column, distance metric). Their execution is landing engine-by-engine. The retrieval pair (Vector Similarity Search + Full-Text Search) is **available today** through DuckDB's `vss` and `fts` extensions - no API key required.
 
@@ -356,12 +367,16 @@ duckle/
 
 ## Roadmap
 
-- [ ] Execution wiring for the AI transforms and Vector / AI Database connectors (in the palette now as preview)
-- [ ] In-process **Native** Rust streaming engine
-- [ ] More source and sink connectors: relational databases, warehouses, REST / APIs, message queues
-- [ ] Incremental and change-data-capture pipelines (diff detect, SCD, merge / upsert)
-- [ ] Richer data-quality and profiling components
-- [ ] Plugin marketplace via the connector SDK
+A complete planned-component breakdown lives in [`docs/roadmap.md`](docs/roadmap.md). At a glance:
+
+- [ ] **Streaming connectors** (Kafka, Pulsar, NATS, Kinesis, Event Hubs, Pub/Sub, RabbitMQ, Redpanda) - need the broker drivers; the engine hook (continuous-pipeline mode) lands alongside
+- [ ] **Vector-DB read endpoints** (Pinecone, Qdrant, Weaviate, Chroma, Milvus, LanceDB) - each vendor's scan API is bespoke; writes already ship via the HTTP sinks
+- [ ] **OAuth-heavy SaaS** (Google Sheets, Excel Online, full Salesforce, Xero, QuickBooks OAuth flow) - the simple-auth REST tiles ship today; full OAuth is on the roadmap
+- [ ] **Custom-code stages** (Python, JavaScript, Rust, Wasm, Shell UDFs) - sandboxing and embed-engine choices are open scope decisions
+- [ ] **AI transforms with model API** (Embeddings, LLM Transform, Text Chunker, PII Redact, Classify, Semantic Dedupe) - need a provider-credential pattern; the search half (Vector Similarity Search + Full-Text Search) ships now
+- [ ] **In-process Native engine** - a Rust streaming / incremental executor as an alternative to shelling out to the DuckDB CLI
+- [ ] **Plugin marketplace** via the connector SDK
+- [ ] Hosted documentation site
 
 ---
 

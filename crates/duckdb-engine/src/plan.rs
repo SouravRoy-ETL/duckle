@@ -1697,9 +1697,11 @@ fn build_stage(
             limit: props.get("limit").and_then(|v| v.as_i64()).filter(|n| *n > 0),
         });
         (String::new(), StageKind::View, None)
-    } else if component_id == "src.graphql" {
-        // GraphQL source: POST {query, variables} to the endpoint,
-        // walk the response data path. Rides RestSourceSpec.
+    } else if matches!(component_id, "src.graphql" | "src.linear") {
+        // GraphQL source + Linear alias: POST {query, variables} to
+        // the endpoint, walk the response data path. Rides
+        // RestSourceSpec. Linear's API is exclusively GraphQL so the
+        // alias gives users a clear-named tile.
         let url = string_prop(&props, "url")
             .or_else(|| string_prop(&props, "endpoint"))
             .filter(|s| !s.is_empty())
@@ -1743,9 +1745,32 @@ fn build_stage(
             max_pages: 1,
         });
         (String::new(), StageKind::View, None)
-    } else if component_id == "src.rest" {
-        // Generic REST source. URL is required; everything else is
-        // optional. Form's authType maps to a header (same as snk.rest).
+    } else if matches!(
+        component_id,
+        "src.rest"
+            | "src.github"
+            | "src.gitlab"
+            | "src.airtable"
+            | "src.notion"
+            | "src.hubspot"
+            | "src.jira"
+            | "src.stripe"
+            | "src.sendgrid"
+            | "src.mailchimp"
+            | "src.pipedrive"
+            | "src.segment"
+            | "src.salesforce"
+            | "src.xero"
+            | "src.quickbooks"
+            | "src.zendesk"
+            | "src.shopify"
+            | "src.intercom"
+    ) {
+        // Generic REST source + thin vendor aliases. Vendors share
+        // the same plumbing - the palette/form pre-fills url, auth
+        // scheme, and pagination for the well-known APIs so users
+        // don't have to look up each vendor's quirks; the engine
+        // treats them identically. Any prefilled value is overridable.
         let url = string_prop(&props, "url")
             .filter(|s| !s.is_empty())
             .ok_or_else(|| EngineError::Config(format!("{}: url required", component_id)))?;
@@ -2180,6 +2205,16 @@ fn build_view_sql(
             Ok(format!("SELECT * FROM {}", quote_ident(upstream)))
         }
         "ctl.merge" => build_union(inputs, false),
+        // Retry wrapper: passthrough view. Retries are read off the
+        // form's Advanced tab as retry_attempts/retry_backoff_ms on
+        // THIS stage. Useful as an explicit marker in the DAG saying
+        // "retry up to this point in the pipeline on transient
+        // failure"; semantically equivalent to setting Advanced.retry
+        // on the next downstream stage, but more visually obvious.
+        "ctl.retry" => {
+            let upstream = inputs.main().ok_or_else(|| missing_input_msg("ctl.retry"))?;
+            Ok(format!("SELECT * FROM {}", quote_ident(upstream)))
+        }
         // Everything else isn't executable yet. Fail loudly rather than
         // silently passing data through unchanged (which would look like
         // success while doing nothing).

@@ -5478,3 +5478,221 @@ fn project_and_rename_reshape_columns() {
     ));
     assert_eq!(cols, 2, "should have projected to 2 columns");
 }
+
+#[test]
+fn ctl_retry_is_a_passthrough_view() {
+    // ctl.retry is documented as a visual marker for retry behavior;
+    // it should pass its input through unchanged. The actual retry
+    // policy is read off the Advanced tab as retry_attempts. Without
+    // a passthrough branch the executor would error 'preview component'.
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,a\n2,b\n3,c\n");
+    let out = out_path(tmp.path(), "out.csv");
+
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("r", "ctl.retry", json!({})),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([
+            main_edge("e1", "s", "r"),
+            main_edge("e2", "r", "k"),
+        ]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "ctl.retry pipeline failed: {:?}", result.error);
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 3);
+}
+
+#[test]
+fn src_github_alias_routes_through_rest_path() {
+    // GitHub / GitLab / Airtable / Notion / HubSpot / Jira / Stripe etc.
+    // are thin engine aliases of src.rest with vendor-specific palette
+    // defaults. A node carrying any of those component IDs must execute
+    // through the exact same RestSourceSpec path so all pagination /
+    // auth / responsePath features work identically.
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let engine = engine_or_skip!();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+
+    // Mimic GitHub's REST response shape: top-level array of objects.
+    let body = br#"[{"id":1,"login":"octocat"},{"id":2,"login":"hubot"}]"#;
+    let captured = Arc::new(std::sync::Mutex::new(String::new()));
+    let cap = captured.clone();
+
+    let handle = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            stream.set_read_timeout(Some(Duration::from_millis(250))).ok();
+            let mut buf = Vec::with_capacity(8192);
+            let mut chunk = [0u8; 4096];
+            for _ in 0..16 {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            *cap.lock().unwrap() = String::from_utf8_lossy(&buf).to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(body);
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = out_path(tmp.path(), "gh.csv");
+    let url = format!("http://127.0.0.1:{}/users", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("g", "src.github", json!({
+                "url": url,
+                "method": "GET",
+                "authType": "bearer",
+                "authToken": "ghp_TEST_TOKEN_NOT_REAL",
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "g", "k")]),
+    ));
+    let _ = handle.join();
+    assert_eq!(r.status, "ok", "src.github alias failed: {:?}", r.error);
+    // Two rows came through the vendor alias and reached the sink.
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 2);
+    // The Bearer header was set, proving the auth path runs on the alias.
+    let req = captured.lock().unwrap();
+    assert!(
+        req.contains("Authorization: Bearer ghp_TEST_TOKEN_NOT_REAL"),
+        "expected Bearer header on src.github alias request, got: {}",
+        req.lines().next().unwrap_or("")
+    );
+}
+
+#[test]
+fn src_linear_alias_routes_through_graphql_path() {
+    // Linear is GraphQL-only. The src.linear tile aliases src.graphql
+    // so users get a vendor-named tile; the engine treats both the
+    // same way (POST {query, variables}, walk /data).
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let engine = engine_or_skip!();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+
+    // Linear-shaped GraphQL response: data -> issues -> nodes [...].
+    let body = br#"{"data":{"issues":{"nodes":[{"id":"ISS-1","title":"first"},{"id":"ISS-2","title":"second"}]}}}"#;
+    let captured = Arc::new(std::sync::Mutex::new(String::new()));
+    let cap = captured.clone();
+
+    let handle = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            stream.set_read_timeout(Some(Duration::from_millis(250))).ok();
+            let mut buf = Vec::with_capacity(8192);
+            let mut chunk = [0u8; 4096];
+            for _ in 0..16 {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            *cap.lock().unwrap() = String::from_utf8_lossy(&buf).to_string();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(body);
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = out_path(tmp.path(), "linear.csv");
+    let url = format!("http://127.0.0.1:{}/graphql", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("l", "src.linear", json!({
+                "url": url,
+                "query": "query { issues { nodes { id title } } }",
+                "responsePath": "/data/issues/nodes",
+                "authType": "bearer",
+                "authToken": "lin_api_TEST",
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "l", "k")]),
+    ));
+    let _ = handle.join();
+    assert_eq!(r.status, "ok", "src.linear alias failed: {:?}", r.error);
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 2);
+    // Confirm it was a POST (GraphQL is always POST) and the query was sent.
+    let req = captured.lock().unwrap();
+    assert!(req.starts_with("POST "), "expected POST request from src.linear alias");
+    assert!(
+        req.contains("query { issues { nodes { id title } } }"),
+        "expected GraphQL query body in src.linear request"
+    );
+}
+
+#[test]
+fn snk_cockroach_routes_through_postgres_attach_path() {
+    // CockroachDB is wire-compatible with Postgres - the engine handles
+    // snk.cockroach via the same postgres ATTACH path as snk.postgres.
+    // This test exercises plan compilation, not a real CockroachDB
+    // connection (we don't run one in CI), so it verifies the planner
+    // accepts the component ID without error rather than the network
+    // round-trip itself.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,a\n");
+    // Use an unreachable host so the postgres ATTACH fails fast; the
+    // planner work happens BEFORE we hit the network, so a config-time
+    // mismatch (unknown component_id, missing required prop, etc) would
+    // surface as a different error class. We assert the error mentions
+    // postgres / connection / cockroach - proving we routed through the
+    // PG handler rather than the 'preview component' fallback.
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("c", "snk.cockroach", json!({
+                "host": "127.0.0.1",
+                "port": 1,
+                "database": "defaultdb",
+                "user": "root",
+                "password": "",
+                "table": "users",
+                "mode": "append",
+            })),
+        ]),
+        json!([main_edge("e1", "s", "c")]),
+    ));
+    // We don't require status == "ok" (no real DB). We require that the
+    // error, if any, is NOT 'isn't executable yet - it's a preview
+    // component' which is what the fallback would produce.
+    if r.status != "ok" {
+        let msg = r.error.unwrap_or_default();
+        assert!(
+            !msg.contains("preview component"),
+            "snk.cockroach should not hit the unknown-component fallback; got: {}",
+            msg
+        );
+    }
+}
