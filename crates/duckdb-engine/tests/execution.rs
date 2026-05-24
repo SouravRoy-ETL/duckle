@@ -2263,6 +2263,61 @@ fn geo_distance_computes_point_distance() {
 }
 
 #[test]
+fn retry_attempts_actually_retries_failing_stage() {
+    // retryAttempts=3 with retryBackoffMs=80 should fail three times and
+    // sleep 80ms + 160ms = 240ms of cumulative backoff. The stage targets
+    // a non-existent column so the bind error is deterministic.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,alice\n");
+    let started = std::time::Instant::now();
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("r", "xf.regex", json!({
+                "column": "no_such_column",
+                "pattern": "x",
+                "replacement": "y",
+                "retryAttempts": 3,
+                "retryBackoffMs": 80
+            })),
+        ]),
+        json!([main_edge("e1", "s", "r")]),
+    ));
+    let elapsed = started.elapsed();
+    assert_ne!(r.status, "ok", "pipeline should ultimately fail after retries");
+    assert!(
+        elapsed >= std::time::Duration::from_millis(200),
+        "expected >= 200ms wall-clock with 3 attempts and 80ms backoff, got {:?}",
+        elapsed
+    );
+}
+
+#[test]
+fn memory_limit_pragma_applied_without_breaking_normal_query() {
+    // Sanity: configure a small memory limit and verify the stage still
+    // runs. The prepended PRAGMA shouldn't interfere with a tiny query.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,alice\n2,bob\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("t", "xf.trim", json!({
+                "column": "name",
+                "memoryLimitMb": 256
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "t"), main_edge("e2", "t", "k")]),
+    ));
+    assert_eq!(r.status, "ok", "memory-limited stage failed: {:?}", r.error);
+    let n = count(&format!("read_csv_auto('{}')", out));
+    assert_eq!(n, 2);
+}
+
+#[test]
 fn ctl_wait_actually_sleeps_before_passthrough() {
     let engine = engine_or_skip!();
     let tmp = tempfile::tempdir().unwrap();

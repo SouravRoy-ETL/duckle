@@ -312,33 +312,55 @@ impl DuckdbEngine {
                 std::thread::sleep(std::time::Duration::from_millis(ms));
             }
             let started = Instant::now();
-            // Enforce "error if exists" before writing a local file sink.
-            let sql = format!("{}{}", secret_prefix, stage.sql);
-            let result = if let Some(spec) = stage.upsert.as_ref() {
-                // Relational-DB upsert: DESCRIBE the upstream first to
-                // get the column list, then assemble INSERT ... ON
-                // CONFLICT (Postgres) or ON DUPLICATE KEY UPDATE (MySQL).
-                self.run_upsert(&db_path, &secret_prefix, spec)
-            } else if let Some(spec) = stage.text_search.as_ref() {
-                // FTS in DuckDB v1.5+ can't see tables created in the
-                // same -c invocation, so we stage in one CLI call then
-                // index + query in a second.
-                self.run_text_search(&db_path, &secret_prefix, &stage.node_id, spec)
-            } else if stage.sink_mode.as_deref() == Some("error")
-                && stage
-                    .sink_path
-                    .as_deref()
-                    .map(is_local_path)
-                    .unwrap_or(false)
-                && std::path::Path::new(stage.sink_path.as_deref().unwrap()).exists()
-            {
-                Err(EngineError::Query(format!(
-                    "Output file already exists: {} (write mode is 'Error if exists')",
-                    stage.sink_path.as_deref().unwrap()
-                )))
-            } else {
-                self.run(Some(&db_path), &sql, false)
+            // Advanced settings: memoryLimitMb prepends a PRAGMA so heavy
+            // aggregations can be capped per stage. The PRAGMA only lives
+            // for the duration of this CLI invocation.
+            let memory_pragma = match stage.memory_limit_mb {
+                Some(mb) => format!("PRAGMA memory_limit='{}MB'; ", mb),
+                None => String::new(),
             };
+            // Enforce "error if exists" before writing a local file sink.
+            let sql = format!("{}{}{}", secret_prefix, memory_pragma, stage.sql);
+            // Retry loop: retry_attempts >= 1; with the default of 1 we
+            // call run() exactly once. Retries sleep retry_backoff_ms
+            // (linearly scaled by attempt index) between attempts.
+            // Cancellation is caught at the start of the *next* stage,
+            // so the retry loop can complete its backoff naturally.
+            let mut result = Err(EngineError::Query("stage did not run".into()));
+            for attempt in 0..stage.retry_attempts {
+                if attempt > 0 && stage.retry_backoff_ms > 0 {
+                    let delay = stage.retry_backoff_ms.saturating_mul(attempt as u64);
+                    std::thread::sleep(std::time::Duration::from_millis(delay));
+                }
+                result = if let Some(spec) = stage.upsert.as_ref() {
+                    // Relational-DB upsert: DESCRIBE the upstream first to
+                    // get the column list, then assemble INSERT ... ON
+                    // CONFLICT (Postgres) or ON DUPLICATE KEY UPDATE (MySQL).
+                    self.run_upsert(&db_path, &secret_prefix, spec)
+                } else if let Some(spec) = stage.text_search.as_ref() {
+                    // FTS in DuckDB v1.5+ can't see tables created in the
+                    // same -c invocation, so we stage in one CLI call then
+                    // index + query in a second.
+                    self.run_text_search(&db_path, &secret_prefix, &stage.node_id, spec)
+                } else if stage.sink_mode.as_deref() == Some("error")
+                    && stage
+                        .sink_path
+                        .as_deref()
+                        .map(is_local_path)
+                        .unwrap_or(false)
+                    && std::path::Path::new(stage.sink_path.as_deref().unwrap()).exists()
+                {
+                    Err(EngineError::Query(format!(
+                        "Output file already exists: {} (write mode is 'Error if exists')",
+                        stage.sink_path.as_deref().unwrap()
+                    )))
+                } else {
+                    self.run(Some(&db_path), &sql, false)
+                };
+                if result.is_ok() {
+                    break;
+                }
+            }
             let elapsed_ms = started.elapsed().as_millis() as u64;
 
             match result {

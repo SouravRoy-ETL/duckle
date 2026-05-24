@@ -51,6 +51,14 @@ pub struct Stage {
     /// Milliseconds the executor sleeps before running this stage.
     /// Set by ctl.wait and ctl.throttle. None = no delay.
     pub wait_ms: Option<u64>,
+    /// Advanced-settings retry: total attempts (1 = no retry). The
+    /// executor sleeps `retry_backoff_ms` (with linear scaling) between
+    /// attempts and only retries on engine errors, not on cancellation.
+    pub retry_attempts: u32,
+    pub retry_backoff_ms: u64,
+    /// PRAGMA memory_limit prepended to the stage SQL when set. Lets a
+    /// user cap a heavy aggregation without touching the whole pipeline.
+    pub memory_limit_mb: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -365,6 +373,22 @@ fn build_stage(
     let mut upsert: Option<UpsertSpec> = None;
     let mut text_search: Option<TextSearchSpec> = None;
     let mut wait_ms: Option<u64> = None;
+    // Advanced settings (universal across components, written by the
+    // Properties Panel's Advanced tab). Engine honours them per stage.
+    let retry_attempts = props
+        .get("retryAttempts")
+        .and_then(|v| v.as_u64())
+        .map(|n| n.max(1) as u32)
+        .unwrap_or(1);
+    let retry_backoff_ms = props
+        .get("retryBackoffMs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let memory_limit_mb = props
+        .get("memoryLimitMb")
+        .and_then(|v| v.as_u64())
+        .filter(|n| *n > 0)
+        .map(|n| n as u32);
     // ATTACH statements for external-DB nodes (DuckDB/SQLite). Each stage
     // runs in its own CLI process, so fixed aliases are collision-free.
     let attach = attach_prelude(component_id, &props);
@@ -567,6 +591,9 @@ fn build_stage(
         upsert,
         text_search,
         wait_ms,
+        retry_attempts,
+        retry_backoff_ms,
+        memory_limit_mb,
     })
 }
 

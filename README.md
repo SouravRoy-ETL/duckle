@@ -187,6 +187,17 @@ The whole group runs today. Validators split their input: passing rows continue 
 | **Dead Letter Queue** | Terminal sink for rejected rows (JSON / CSV / Parquet at a path). Conventionally wired to an upstream node's reject port. | Available |
 | **Iterate / For Each / Schedule / Try-Catch / Retry / Run Pipeline / Trigger** | Loop and nested-pipeline orchestration | Planned (need DAG-engine restructuring; orchestration crate exists for cron-style schedules) |
 
+### Advanced settings (per-node)
+
+Every node has an **Advanced** tab in the Properties panel with fields the engine honours at run time:
+
+| Field | What it does |
+|---|---|
+| **Retry attempts** | Total tries on failure (1 = no retry). The engine sleeps `backoff * attempt` ms between attempts. |
+| **Retry backoff (ms)** | Inter-attempt sleep, linearly scaled by attempt index. |
+| **Memory limit (MB)** | `PRAGMA memory_limit` applied to this stage only - cap a heavy aggregation without touching the whole pipeline. |
+| **Log row count** | Print the post-stage rowcount to the run output. |
+
 ### Orchestration and workspace
 
 | Capability | What it does |

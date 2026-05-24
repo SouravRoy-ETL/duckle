@@ -13,8 +13,44 @@ import SchemaEditor from './SchemaEditor';
 import FieldRenderer from './fields/FieldRenderer';
 import { FieldContext, type ActiveContext } from './fields/FieldContext';
 import { getManifest } from './fields/component-manifests';
+import type { Field } from './fields/types';
 
 type TabId = 'basic' | 'schema' | 'preview' | 'advanced' | 'validation';
+
+// Universal Advanced-tab fields. The engine reads retryAttempts /
+// retryBackoffMs / memoryLimitMb directly off the node's properties;
+// the other two are descriptive for now (no runtime wiring yet but
+// surfaced so users can encode intent and avoid future churn).
+const ADVANCED_FIELDS: Field[] = [
+    {
+        key: 'retryAttempts',
+        label: 'Retry attempts',
+        kind: 'integer',
+        defaultValue: 1,
+        description: 'Total attempts on failure (1 = no retry). The executor sleeps the backoff (linearly scaled by attempt index) between attempts.',
+    },
+    {
+        key: 'retryBackoffMs',
+        label: 'Retry backoff (ms)',
+        kind: 'integer',
+        defaultValue: 0,
+        description: 'Sleep between retries; the Nth retry sleeps backoff * N milliseconds.',
+    },
+    {
+        key: 'memoryLimitMb',
+        label: 'Memory limit (MB)',
+        kind: 'integer',
+        defaultValue: 0,
+        description: "PRAGMA memory_limit applied to this stage only. 0 = no override. Useful to cap a heavy aggregation without touching the whole pipeline.",
+    },
+    {
+        key: 'logRowCount',
+        label: 'Log row count',
+        kind: 'bool',
+        defaultValue: false,
+        description: 'Print the post-stage row count to the run output (descriptive; row counts already surface in node badges).',
+    },
+];
 
 const KIND_LABEL: Record<string, string> = {
     source: 'Source',
@@ -321,12 +357,20 @@ export default function PropertiesPanel({
 
                     {tab === 'advanced' ? (
                         <div className="properties-section">
-                            <div className="properties-placeholder">
-                                <div className="properties-placeholder-title">Advanced settings</div>
-                                <div className="properties-placeholder-desc">
-                                    Buffering, parallelism, retry policy, custom partitioning,
-                                    encoding options, and other rarely-touched knobs will live here.
-                                </div>
+                            <div className="form-section">
+                                <div className="form-section-label">Reliability</div>
+                                {ADVANCED_FIELDS.map(field => (
+                                    <FieldRenderer
+                                        key={field.key}
+                                        field={field}
+                                        value={
+                                            props[field.key] !== undefined
+                                                ? props[field.key]
+                                                : field.defaultValue
+                                        }
+                                        onChange={v => setProperty(field.key, v)}
+                                    />
+                                ))}
                             </div>
                         </div>
                     ) : null}
