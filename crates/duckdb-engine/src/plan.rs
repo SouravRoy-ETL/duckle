@@ -65,6 +65,10 @@ pub struct Stage {
     pub snowflake_source: Option<SnowflakeSourceSpec>,
     /// Databricks SQL Statement Execution API source. Same shape.
     pub databricks_source: Option<DatabricksSourceSpec>,
+    /// Generic HTTP REST source. Fetches a URL (with optional cursor
+    /// pagination), parses the response, and materializes the row
+    /// objects as a DuckDB table.
+    pub rest_source: Option<RestSourceSpec>,
     /// Milliseconds the executor sleeps before running this stage.
     /// Set by ctl.wait and ctl.throttle. None = no delay.
     pub wait_ms: Option<u64>,
@@ -140,6 +144,34 @@ pub struct SnowflakeSourceSpec {
     pub warehouse: Option<String>,
     pub role: Option<String>,
     pub query: String,
+}
+
+/// src.rest: generic HTTP-API source. Fetches a URL, parses the JSON
+/// response, optionally walks a JSON pointer (`response_path`) to
+/// extract the array of row objects, and optionally follows
+/// cursor-style pagination by extracting a cursor token from a JSON
+/// pointer in each response and appending it as a query parameter
+/// to the next request. Materializes the accumulated rows as a
+/// DuckDB table via read_json_auto.
+#[derive(Debug, Clone)]
+pub struct RestSourceSpec {
+    pub node_id: String,
+    pub url: String,
+    pub method: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<String>,
+    /// JSON pointer (RFC 6901) into the response that yields the
+    /// array of row objects. Empty string = the response root IS the
+    /// array. Example: "/data" or "/results/items".
+    pub response_path: String,
+    /// JSON pointer to the cursor / next-page token in each response.
+    /// None = no pagination (single-shot fetch).
+    pub cursor_next_path: Option<String>,
+    /// Query-string parameter name to send the cursor under. Required
+    /// when cursor_next_path is set.
+    pub cursor_param: Option<String>,
+    /// Hard cap on pages fetched (safety net against runaway loops).
+    pub max_pages: u64,
 }
 
 /// src.databricks: SQL Statement Execution API read. Same shape as
@@ -515,6 +547,7 @@ fn build_stage(
     let mut databricks_sink: Option<DatabricksSinkSpec> = None;
     let mut snowflake_source: Option<SnowflakeSourceSpec> = None;
     let mut databricks_source: Option<DatabricksSourceSpec> = None;
+    let mut rest_source: Option<RestSourceSpec> = None;
     let mut wait_ms: Option<u64> = None;
     // Advanced settings (universal across components, written by the
     // Properties Panel's Advanced tab). Engine honours them per stage.
@@ -977,6 +1010,51 @@ fn build_stage(
             ),
         };
         (copy, StageKind::Sink, Some(from_view.to_string()))
+    } else if component_id == "src.rest" {
+        // Generic REST source. URL is required; everything else is
+        // optional. Form's authType maps to a header (same as snk.rest).
+        let url = string_prop(&props, "url")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: url required", component_id)))?;
+        let method = string_prop(&props, "method")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "GET".into())
+            .to_uppercase();
+        let body = string_prop(&props, "body").filter(|s| !s.is_empty());
+        let mut headers = headers_from_props(&props);
+        let auth_type = string_prop(&props, "authType").unwrap_or_else(|| "none".into());
+        let auth_token = string_prop(&props, "authToken").unwrap_or_default();
+        if !auth_token.is_empty() {
+            match auth_type.as_str() {
+                "bearer" => headers.push(("Authorization".into(), format!("Bearer {}", auth_token))),
+                "apikey" => headers.push(("X-API-Key".into(), auth_token)),
+                _ => {}
+            }
+        }
+        let response_path = string_prop(&props, "responsePath").unwrap_or_default();
+        // Pagination config. cursor_next_path + cursor_param both
+        // optional; both must be non-empty for pagination to actually
+        // happen. paginationType prop in the form is descriptive (no
+        // 'offset' or 'page' modes implemented yet).
+        let cursor_next_path = string_prop(&props, "cursorNextPath").filter(|s| !s.is_empty());
+        let cursor_param = string_prop(&props, "cursorParam").filter(|s| !s.is_empty());
+        let max_pages = props
+            .get("maxPages")
+            .and_then(|v| v.as_u64())
+            .filter(|n| *n > 0)
+            .unwrap_or(100);
+        rest_source = Some(RestSourceSpec {
+            node_id: node.id.clone(),
+            url,
+            method,
+            headers,
+            body,
+            response_path,
+            cursor_next_path,
+            cursor_param,
+            max_pages,
+        });
+        (String::new(), StageKind::View, None)
     } else if component_id == "src.snowflake" {
         // Snowflake source. User picks PAT or JWT auth (same shape
         // as snk.snowflake) and provides either a free 'query' or
@@ -1134,6 +1212,7 @@ fn build_stage(
         databricks_sink,
         snowflake_source,
         databricks_source,
+        rest_source,
         wait_ms,
         retry_attempts,
         retry_backoff_ms,

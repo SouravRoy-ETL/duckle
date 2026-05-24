@@ -2444,6 +2444,90 @@ fn text_reverse_repeat_and_compare() {
 }
 
 #[test]
+fn src_rest_fetches_and_walks_cursor_pages() {
+    // First response: 2 rows under /data + cursor=p2; engine GETs the
+    // next page (also 2 rows, no further cursor). Total 4 rows expected,
+    // and exactly 2 HTTP requests.
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let engine = engine_or_skip!();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+
+    let page1 = br#"{"data":[{"id":1,"name":"alice"},{"id":2,"name":"bob"}],"meta":{"next_cursor":"p2"}}"#;
+    let page2 = br#"{"data":[{"id":3,"name":"carol"},{"id":4,"name":"dan"}],"meta":{"next_cursor":null}}"#;
+    let req_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let rc = req_count.clone();
+    let cap = captured.clone();
+
+    let handle = std::thread::spawn(move || {
+        for stream in listener.incoming().take(2) {
+            let mut stream = match stream { Ok(s) => s, Err(_) => break };
+            stream.set_read_timeout(Some(Duration::from_millis(250))).ok();
+            stream.set_nodelay(true).ok();
+            let mut buf = Vec::with_capacity(8192);
+            let mut chunk = [0u8; 4096];
+            for _ in 0..16 {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            cap.lock().unwrap().push(String::from_utf8_lossy(&buf).to_string());
+            let idx = rc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let body: &[u8] = if idx == 0 { page1 } else { page2 };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(body);
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = out_path(tmp.path(), "out.csv");
+    let url = format!("http://127.0.0.1:{}/items", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("r", "src.rest", json!({
+                "url": url,
+                "method": "GET",
+                "responsePath": "/data",
+                "cursorNextPath": "/meta/next_cursor",
+                "cursorParam": "cursor"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "r", "k")]),
+    ));
+    let _ = handle.join();
+    assert_eq!(r.status, "ok", "src.rest failed: {:?}", r.error);
+    assert_eq!(
+        req_count.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "expected 2 HTTP requests (initial + cursor page)"
+    );
+    let n = count(&format!("read_csv_auto('{}')", out));
+    assert_eq!(n, 4, "expected 4 total rows across 2 pages, got {}", n);
+    // Confirm the cursor was sent on the second request.
+    let reqs = captured.lock().unwrap();
+    assert!(
+        reqs[1].contains("cursor=p2"),
+        "expected cursor=p2 in 2nd request line: {}",
+        reqs[1].lines().next().unwrap_or("")
+    );
+}
+
+#[test]
 fn src_snowflake_walks_partitions() {
     // Mock returns a partitionInfo with two entries; partition 0's
     // data is in the initial response, partition 1 is fetched via

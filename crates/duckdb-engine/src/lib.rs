@@ -28,7 +28,7 @@ pub mod plan;
 pub use history::{append_run_record, load_run_history, RunRecord};
 pub use plan::{CompiledPipeline, PipelineDoc, Stage, StageKind};
 use plan::{
-    DatabricksSinkSpec, DatabricksSourceSpec, SnowflakeAuth, SnowflakeSinkSpec,
+    DatabricksSinkSpec, DatabricksSourceSpec, RestSourceSpec, SnowflakeAuth, SnowflakeSinkSpec,
     SnowflakeSourceSpec, WebhookSpec,
 };
 
@@ -356,6 +356,10 @@ impl DuckdbEngine {
                     self.run_snowflake_source(&db_path, spec)
                 } else if let Some(spec) = stage.databricks_source.as_ref() {
                     self.run_databricks_source(&db_path, spec)
+                } else if let Some(spec) = stage.rest_source.as_ref() {
+                    // Generic HTTP source: fetch URL, walk response_path,
+                    // follow cursor pagination, materialize as table.
+                    self.run_rest_source(&db_path, spec)
                 } else if let Some(spec) = stage.upsert.as_ref() {
                     // Relational-DB upsert: DESCRIBE the upstream first to
                     // get the column list, then assemble INSERT ... ON
@@ -779,6 +783,95 @@ impl DuckdbEngine {
         Ok(format!(
             "snowflake: inserted {} rows into {}",
             total_inserted, spec.table
+        ))
+    }
+
+    /// Generic HTTP REST source. Fetches the URL (optionally with a
+    /// JSON body for POST APIs), parses the response, walks the
+    /// configured JSON pointer to find the row array, and follows
+    /// cursor pagination by extracting a cursor token + appending it
+    /// as a query string parameter to the next request. Stops when
+    /// no cursor token is present or max_pages is hit.
+    fn run_rest_source(
+        &self,
+        db: &Path,
+        spec: &RestSourceSpec,
+    ) -> Result<String, EngineError> {
+        let mut url = spec.url.clone();
+        let mut all_rows: Vec<JsonValue> = Vec::new();
+        let mut pages = 0_u64;
+        loop {
+            // Build request
+            let mut req = ureq::request(&spec.method, &url);
+            let has_ct = spec
+                .headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("content-type"));
+            for (k, v) in &spec.headers {
+                req = req.set(k, v);
+            }
+            if spec.body.is_some() && !has_ct {
+                req = req.set("content-type", "application/json");
+            }
+            let resp_result = match &spec.body {
+                Some(b) => req.send_string(b),
+                None => req.call(),
+            };
+            let response: JsonValue = match resp_result {
+                Ok(r) => r.into_json().map_err(|e| {
+                    EngineError::Query(format!("REST response not JSON: {}", e))
+                })?,
+                Err(ureq::Error::Status(code, r)) => {
+                    let body = r.into_string().unwrap_or_default();
+                    return Err(EngineError::Query(format!(
+                        "REST HTTP {} from {}: {}",
+                        code,
+                        url,
+                        body.chars().take(300).collect::<String>()
+                    )));
+                }
+                Err(e) => {
+                    return Err(EngineError::Query(format!(
+                        "REST HTTP transport to {}: {}",
+                        url, e
+                    )));
+                }
+            };
+            // Extract rows array
+            let rows = if spec.response_path.is_empty() {
+                response.as_array().cloned().unwrap_or_default()
+            } else {
+                response
+                    .pointer(&spec.response_path)
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            all_rows.extend(rows);
+            pages += 1;
+            // Cursor pagination: extract next cursor, append to URL
+            let next_cursor = match (&spec.cursor_next_path, &spec.cursor_param) {
+                (Some(p), Some(_)) => response
+                    .pointer(p)
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from),
+                _ => None,
+            };
+            match (next_cursor, &spec.cursor_param) {
+                (Some(token), Some(param)) if pages < spec.max_pages => {
+                    let sep = if spec.url.contains('?') { '&' } else { '?' };
+                    url = format!("{}{}{}={}", spec.url, sep, param, urlencode_simple(&token));
+                }
+                _ => break,
+            }
+        }
+        materialize_jsonobjects_as_table(db, &spec.node_id, &all_rows)?;
+        Ok(format!(
+            "rest: materialized {} rows ({} page(s)) into {}",
+            all_rows.len(),
+            pages,
+            spec.node_id
         ))
     }
 
@@ -1253,6 +1346,45 @@ fn now_nanos() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0)
+}
+
+/// URL-encode a string for use as a query parameter value.
+/// Conservative escaping: alphanumerics + safe characters pass
+/// through; everything else gets %XX. Avoids pulling in the `url`
+/// crate just for this.
+fn urlencode_simple(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.as_bytes() {
+        let c = *byte as char;
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
+            out.push(c);
+        } else {
+            out.push_str(&format!("%{:02X}", byte));
+        }
+    }
+    out
+}
+
+/// Materialize a Vec<JsonValue> of row objects as a DuckDB table.
+/// Variant of materialize_arrayrows_as_table for sources whose
+/// response is already object-shaped (no column zipping needed).
+fn materialize_jsonobjects_as_table(
+    db: &Path,
+    node_id: &str,
+    rows: &[JsonValue],
+) -> Result<(), EngineError> {
+    let tmp_dir = std::env::temp_dir();
+    let tmp_path = tmp_dir.join(format!("duckle-rest-{}-{}.json", node_id, std::process::id()));
+    let json_text = serde_json::to_string(&JsonValue::Array(rows.to_vec()))
+        .map_err(|e| EngineError::Query(format!("rest source: JSON encode: {}", e)))?;
+    std::fs::write(&tmp_path, json_text)
+        .map_err(|e| EngineError::Query(format!("rest source: write tmp file: {}", e)))?;
+    let sql = format!(
+        "CREATE OR REPLACE TABLE {} AS SELECT * FROM read_json_auto('{}', format='array')",
+        plan::quote_ident(node_id),
+        tmp_path.display().to_string().replace('\\', "/").replace('\'', "''")
+    );
+    rest_source_apply(db, &sql)
 }
 
 /// Shared helper for src.snowflake / src.databricks: take an

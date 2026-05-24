@@ -166,7 +166,7 @@ export const PALETTE: Category[] = [
                 id: 'src.apis',
                 label: 'APIs',
                 components: [
-                    src('rest', 'REST', 'planned'),
+                    src('rest', 'REST', 'available', 'Generic HTTP GET/POST source. Parses JSON response, optionally walks a JSON pointer (responsePath) to find the row array, and follows cursor-style pagination if configured (cursorNextPath + cursorParam).'),
                     src('graphql', 'GraphQL', 'planned'),
                     src('grpc', 'gRPC', 'planned'),
                     src('webhook', 'Webhook', 'planned'),
