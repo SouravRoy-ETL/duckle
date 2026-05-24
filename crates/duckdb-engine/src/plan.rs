@@ -48,6 +48,13 @@ pub struct Stage {
     /// query) so the PRAGMA sees committed state. Works unchanged on
     /// v1.4 too.
     pub text_search: Option<TextSearchSpec>,
+    /// ctl.runpipeline: when set, the executor reads + runs another
+    /// pipeline file as a side effect *before* propagating this
+    /// stage's pass-through view. Lets a parent pipeline trigger
+    /// helper pipelines (refresh dimension tables, kick off a cleanup,
+    /// etc.) without the full block-scope DAG refactor that
+    /// ctl.iterate / ctl.foreach / ctl.try need.
+    pub run_pipeline_path: Option<String>,
     /// HTTP per-row sink (snk.webhook / snk.rest). When set, the
     /// executor materializes the upstream view and dispatches requests
     /// via ureq; stage SQL is empty (no DuckDB write).
@@ -318,12 +325,23 @@ pub struct MongoSourceSpec {
     pub limit: Option<i64>,
 }
 
+/// Elasticsearch / OpenSearch pagination strategy.
+#[derive(Debug, Clone)]
+pub enum ElasticPagination {
+    /// Classic from+size. Bounded by index.max_result_window (10k
+    /// default). Simpler but stops working at scale.
+    FromSize,
+    /// search_after with a sort + last-hit cursor. Unbounded by
+    /// max_result_window. Requires a consistent sort with a
+    /// tiebreaker; defaults to [{"_shard_doc": "asc"}] (Elasticsearch
+    /// 7.12+) or whatever the user supplies via `sort`.
+    SearchAfter { sort: Vec<serde_json::Value> },
+}
+
 /// src.elastic / src.opensearch: read from Elasticsearch-compatible
 /// _search APIs. Both vendors share the same wire protocol, so they
-/// ride one executor. Pagination is from+size (default 1000 rows
-/// per page); the engine stops when a page returns fewer than `size`
-/// hits or `max_pages` is reached. Beyond 10,000 rows users need
-/// `search_after` (follow-up commit).
+/// ride one executor. Pagination mode is either from+size (default)
+/// or search_after - the latter lifts the 10k max_result_window cap.
 #[derive(Debug, Clone)]
 pub struct ElasticSourceSpec {
     pub node_id: String,
@@ -335,11 +353,11 @@ pub struct ElasticSourceSpec {
     pub api_key: Option<String>,
     /// Raw Elasticsearch query DSL. Empty / None = `{"match_all": {}}`.
     pub query: Option<String>,
-    /// Page size (default 1000). from+size pagination assumes <= 10000
-    /// total rows; for larger result sets the user should adjust the
-    /// index's max_result_window or switch to a chunked LIMIT query.
+    /// Page size (default 1000).
     pub size: u64,
     pub max_pages: u64,
+    /// Which pagination to use.
+    pub pagination: ElasticPagination,
 }
 
 /// Pagination style for src.rest.
@@ -751,6 +769,7 @@ fn build_stage(
     let mut upsert: Option<UpsertSpec> = None;
     let mut text_search: Option<TextSearchSpec> = None;
     let mut webhook: Option<WebhookSpec> = None;
+    let mut run_pipeline_path: Option<String> = None;
     let mut snowflake_sink: Option<SnowflakeSinkSpec> = None;
     let mut databricks_sink: Option<DatabricksSinkSpec> = None;
     let mut snowflake_source: Option<SnowflakeSourceSpec> = None;
@@ -1265,6 +1284,35 @@ fn build_stage(
                 Some(from_view.to_string()),
             )
         }
+    } else if component_id == "ctl.runpipeline" || component_id == "ctl.trigger" {
+        // Side-effect: read + execute the referenced pipeline file
+        // before passing this node's upstream view through. Form
+        // writes `pipelineRef` (path to a .json pipeline doc) +
+        // optional `waitForCompletion` (currently always true; async
+        // fire-and-forget would need scheduler integration).
+        // Without an upstream input, the stage emits an empty table
+        // so downstream nodes can still chain off it as a 'trigger
+        // happened' signal.
+        let path = string_prop(&props, "pipelineRef")
+            .or_else(|| string_prop(&props, "path"))
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: pipelineRef (path to a pipeline file) required", component_id)))?;
+        run_pipeline_path = Some(path);
+        // Pass-through view: use main input if present, otherwise
+        // synthesize an empty 0-column table so downstream wiring
+        // still has a target.
+        let sql = match inputs.main() {
+            Some(from_view) => format!(
+                "CREATE OR REPLACE TABLE {} AS SELECT * FROM {}",
+                quote_ident(&node.id),
+                quote_ident(from_view)
+            ),
+            None => format!(
+                "CREATE OR REPLACE TABLE {} AS SELECT 'triggered' AS status WHERE 1=0",
+                quote_ident(&node.id)
+            ),
+        };
+        (sql, StageKind::View, None)
     } else if component_id == "ctl.wait" {
         // Pass-through view. Engine sleeps wait_ms before running the SQL.
         // Form writes { duration: int, unit: 'milliseconds'|'seconds'|'minutes'|'hours' }.
@@ -1363,6 +1411,21 @@ fn build_stage(
         let index = string_prop(&props, "index")
             .filter(|s| !s.is_empty())
             .ok_or_else(|| EngineError::Config(format!("{}: index required", component_id)))?;
+        let pagination_mode = string_prop(&props, "paginationMode").unwrap_or_else(|| "from_size".into());
+        let pagination = match pagination_mode.as_str() {
+            "search_after" => {
+                let sort = string_prop(&props, "sort")
+                    .filter(|s| !s.trim().is_empty())
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .and_then(|v| v.as_array().cloned())
+                    // Default sort: _shard_doc is Elasticsearch's
+                    // built-in shard-stable doc id (7.12+); safe
+                    // tiebreaker that works without any field choice.
+                    .unwrap_or_else(|| vec![serde_json::json!({"_shard_doc": "asc"})]);
+                ElasticPagination::SearchAfter { sort }
+            }
+            _ => ElasticPagination::FromSize,
+        };
         elastic_source = Some(ElasticSourceSpec {
             node_id: node.id.clone(),
             endpoint,
@@ -1379,6 +1442,7 @@ fn build_stage(
                 .and_then(|v| v.as_u64())
                 .filter(|n| *n > 0)
                 .unwrap_or(100),
+            pagination,
         });
         (String::new(), StageKind::View, None)
     } else if component_id == "src.oracle" {
@@ -1738,6 +1802,7 @@ fn build_stage(
         sink_mode,
         upsert,
         text_search,
+        run_pipeline_path,
         webhook,
         snowflake_sink,
         databricks_sink,

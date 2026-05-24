@@ -338,6 +338,24 @@ impl DuckdbEngine {
                     let delay = stage.retry_backoff_ms.saturating_mul(attempt as u64);
                     std::thread::sleep(std::time::Duration::from_millis(delay));
                 }
+                // ctl.runpipeline / ctl.trigger: read + execute the
+                // referenced pipeline file as a side effect *before*
+                // the stage's own pass-through SQL. Failure retries
+                // the whole stage (sub-pipeline + SQL together).
+                // Sub-pipelines run in their own temp DB via the
+                // engine's normal execute_pipeline; their output
+                // isn't composed into the parent (the side-effect /
+                // trigger model). Full block-scope composition needs
+                // the DAG-engine refactor noted in the README.
+                if let Some(ref sub_path) = stage.run_pipeline_path {
+                    if let Err(e) = self.run_subpipeline(sub_path) {
+                        result = Err(EngineError::Query(format!(
+                            "ctl.runpipeline({}): {}",
+                            sub_path, e
+                        )));
+                        continue;
+                    }
+                }
                 result = if let Some(spec) = stage.webhook.as_ref() {
                     // HTTP sink (snk.webhook / snk.rest): materialize the
                     // upstream as JSON via DuckDB, then dispatch one
@@ -1539,15 +1557,15 @@ impl DuckdbEngine {
     }
 
     /// Elasticsearch / OpenSearch _search source. POSTs the query DSL
-    /// to {endpoint}/{index}/_search with from+size pagination,
-    /// extracts hits.hits[]._source from each page, and materializes
-    /// the accumulated row objects. Stops when a page returns fewer
-    /// than `size` hits (no more data) or max_pages is hit.
+    /// to {endpoint}/{index}/_search and follows the configured
+    /// pagination mode (from+size or search_after). Extracts
+    /// hits.hits[]._source per page and materializes.
     fn run_elastic_source(
         &self,
         db: &Path,
         spec: &ElasticSourceSpec,
     ) -> Result<String, EngineError> {
+        use plan::ElasticPagination;
         let url = format!(
             "{}/{}/_search",
             spec.endpoint.trim_end_matches('/'),
@@ -1559,68 +1577,122 @@ impl DuckdbEngine {
             })?,
             None => serde_json::json!({ "match_all": {} }),
         };
-        let mut all_rows: Vec<JsonValue> = Vec::new();
-        let mut from = 0_u64;
-        let mut pages = 0_u64;
-        loop {
-            let body = serde_json::json!({
-                "query": query_dsl,
-                "size": spec.size,
-                "from": from,
-            });
-            let body_str = serde_json::to_string(&body).unwrap_or_else(|_| "{}".into());
+        let post = |body: &JsonValue| -> Result<JsonValue, EngineError> {
+            let body_str = serde_json::to_string(body).unwrap_or_else(|_| "{}".into());
             let mut req = ureq::post(&url)
                 .set("Content-Type", "application/json")
                 .set("Accept", "application/json");
             if let Some(key) = &spec.api_key {
                 req = req.set("Authorization", &format!("ApiKey {}", key));
             }
-            let resp = match req.send_string(&body_str) {
-                Ok(r) => r,
+            match req.send_string(&body_str) {
+                Ok(r) => r.into_json().map_err(|e| {
+                    EngineError::Query(format!("Elastic response not JSON: {}", e))
+                }),
                 Err(ureq::Error::Status(code, r)) => {
                     let body = r.into_string().unwrap_or_default();
-                    return Err(EngineError::Query(format!(
+                    Err(EngineError::Query(format!(
                         "Elastic HTTP {} from {}: {}",
                         code,
                         url,
                         body.chars().take(300).collect::<String>()
-                    )));
+                    )))
                 }
-                Err(e) => {
-                    return Err(EngineError::Query(format!(
-                        "Elastic HTTP transport to {}: {}",
-                        url, e
-                    )));
+                Err(e) => Err(EngineError::Query(format!(
+                    "Elastic HTTP transport to {}: {}",
+                    url, e
+                ))),
+            }
+        };
+        let mut all_rows: Vec<JsonValue> = Vec::new();
+        let mut pages = 0_u64;
+        match &spec.pagination {
+            ElasticPagination::FromSize => {
+                let mut from = 0_u64;
+                loop {
+                    let body = serde_json::json!({
+                        "query": query_dsl,
+                        "size": spec.size,
+                        "from": from,
+                    });
+                    let response = post(&body)?;
+                    let hits = response
+                        .pointer("/hits/hits")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let hit_count = hits.len();
+                    for h in hits {
+                        let source = h
+                            .get("_source")
+                            .cloned()
+                            .unwrap_or(JsonValue::Object(Default::default()));
+                        all_rows.push(source);
+                    }
+                    pages += 1;
+                    if (hit_count as u64) < spec.size || pages >= spec.max_pages {
+                        break;
+                    }
+                    from = from.saturating_add(spec.size);
                 }
-            };
-            let response: JsonValue = resp.into_json().map_err(|e| {
-                EngineError::Query(format!("Elastic response not JSON: {}", e))
-            })?;
-            let hits = response
-                .pointer("/hits/hits")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            let hit_count = hits.len();
-            for h in hits {
-                let source = h
-                    .get("_source")
-                    .cloned()
-                    .unwrap_or(JsonValue::Object(Default::default()));
-                all_rows.push(source);
             }
-            pages += 1;
-            // Stop when we got fewer than `size` (last page) or hit cap.
-            if (hit_count as u64) < spec.size || pages >= spec.max_pages {
-                break;
+            ElasticPagination::SearchAfter { sort } => {
+                // search_after walks via the last hit's `sort` array.
+                // Lifts the 10k max_result_window cap entirely.
+                let mut last_sort: Option<JsonValue> = None;
+                loop {
+                    let mut body = serde_json::json!({
+                        "query": query_dsl,
+                        "size": spec.size,
+                        "sort": sort,
+                    });
+                    if let Some(sa) = &last_sort {
+                        body["search_after"] = sa.clone();
+                    }
+                    let response = post(&body)?;
+                    let hits = response
+                        .pointer("/hits/hits")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let hit_count = hits.len();
+                    // Grab the last hit's sort before we move `hits`.
+                    let next_after = hits
+                        .last()
+                        .and_then(|h| h.get("sort"))
+                        .cloned();
+                    for h in hits {
+                        let source = h
+                            .get("_source")
+                            .cloned()
+                            .unwrap_or(JsonValue::Object(Default::default()));
+                        all_rows.push(source);
+                    }
+                    pages += 1;
+                    if hit_count == 0 || pages >= spec.max_pages {
+                        break;
+                    }
+                    if (hit_count as u64) < spec.size {
+                        // Last page didn't fill - we're done even with
+                        // search_after.
+                        break;
+                    }
+                    last_sort = match next_after {
+                        Some(s) => Some(s),
+                        None => break, // server returned no sort; can't continue.
+                    };
+                }
             }
-            from = from.saturating_add(spec.size);
         }
         materialize_jsonobjects_as_table(db, &spec.node_id, &all_rows)?;
         Ok(format!(
-            "elastic: materialized {} rows ({} page(s)) into {}",
+            "elastic: materialized {} rows ({} page(s), {}) into {}",
             all_rows.len(),
             pages,
+            match &spec.pagination {
+                ElasticPagination::FromSize => "from+size",
+                ElasticPagination::SearchAfter { .. } => "search_after",
+            },
             spec.node_id
         ))
     }
@@ -1757,6 +1829,29 @@ impl DuckdbEngine {
             pages,
             spec.node_id
         ))
+    }
+
+    /// Read a pipeline file, parse it as a PipelineDoc, and run it
+    /// inline via the engine's normal execute_pipeline. Failures
+    /// surface as Err(EngineError::Query) with the sub-pipeline's
+    /// error message. Used by ctl.runpipeline / ctl.trigger.
+    fn run_subpipeline(&self, path: &str) -> Result<(), EngineError> {
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            EngineError::Config(format!("ctl.runpipeline: read '{}': {}", path, e))
+        })?;
+        let sub_doc: plan::PipelineDoc = serde_json::from_str(&content).map_err(|e| {
+            EngineError::Config(format!("ctl.runpipeline: parse '{}': {}", path, e))
+        })?;
+        let result = self.execute_pipeline(&sub_doc);
+        if result.status == "ok" {
+            Ok(())
+        } else {
+            Err(EngineError::Query(
+                result
+                    .error
+                    .unwrap_or_else(|| "sub-pipeline failed (no error message)".into()),
+            ))
+        }
     }
 
     /// Snowflake SQL API source. POSTs the SELECT, polls the

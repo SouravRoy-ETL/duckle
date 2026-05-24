@@ -2563,6 +2563,88 @@ fn snk_and_src_mongodb_roundtrip_via_real_uri() {
 }
 
 #[test]
+fn src_elastic_paginates_via_search_after() {
+    // Two pages, each size=2. Page 1's last hit has sort=[42, "a"];
+    // engine should send that as search_after on the next request.
+    // Page 2 returns 1 hit (< size) so we stop.
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let engine = engine_or_skip!();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+
+    let page1 = br#"{"hits":{"hits":[{"_source":{"id":1},"sort":[10,"a"]},{"_source":{"id":2},"sort":[42,"b"]}]}}"#;
+    let page2 = br#"{"hits":{"hits":[{"_source":{"id":3},"sort":[99,"c"]}]}}"#;
+    let req_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let captured = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let rc = req_count.clone();
+    let cap = captured.clone();
+
+    let handle = std::thread::spawn(move || {
+        for stream in listener.incoming().take(2) {
+            let mut stream = match stream { Ok(s) => s, Err(_) => break };
+            stream.set_read_timeout(Some(Duration::from_millis(250))).ok();
+            stream.set_nodelay(true).ok();
+            let mut buf = Vec::with_capacity(8192);
+            let mut chunk = [0u8; 4096];
+            for _ in 0..16 {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            cap.lock().unwrap().push(String::from_utf8_lossy(&buf).to_string());
+            let idx = rc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let body: &[u8] = if idx == 0 { page1 } else { page2 };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(body);
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = out_path(tmp.path(), "out.csv");
+    let endpoint = format!("http://127.0.0.1:{}", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("e", "src.elastic", json!({
+                "endpoint": endpoint,
+                "index": "docs",
+                "size": 2,
+                "paginationMode": "search_after",
+                "sort": "[{\"_id\":\"asc\"}]"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "e", "k")]),
+    ));
+    let _ = handle.join();
+    assert_eq!(r.status, "ok", "search_after failed: {:?}", r.error);
+    assert_eq!(req_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    let n = count(&format!("read_csv_auto('{}')", out));
+    assert_eq!(n, 3, "expected 3 docs total, got {}", n);
+    let reqs = captured.lock().unwrap();
+    // First request: no search_after key.
+    assert!(!reqs[0].contains("search_after"), "1st request shouldn't have search_after: {}", reqs[0]);
+    // Second request: search_after with last hit's sort = [42, "b"].
+    assert!(
+        reqs[1].contains("search_after") && reqs[1].contains("42"),
+        "2nd request should carry search_after=[42, \"b\"]: {}",
+        reqs[1]
+    );
+}
+
+#[test]
 fn src_elastic_paginates_via_from_size() {
     // Two pages of size=2 each. The first returns hits = [a, b],
     // the second returns [c] (last page = fewer than size = stop).
@@ -3855,6 +3937,91 @@ fn memory_limit_pragma_applied_without_breaking_normal_query() {
     assert_eq!(r.status, "ok", "memory-limited stage failed: {:?}", r.error);
     let n = count(&format!("read_csv_auto('{}')", out));
     assert_eq!(n, 2);
+}
+
+#[test]
+fn ctl_runpipeline_executes_referenced_pipeline_as_side_effect() {
+    // Write a tiny sub-pipeline that materializes a CSV at a known
+    // path; the parent pipeline runs ctl.runpipeline against that
+    // file, and we assert the sub-pipeline's CSV got written (proving
+    // the side effect fired) AND the parent's downstream sink got
+    // its pass-through rows.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Sub-pipeline: read in.csv, write sub_out.csv.
+    let sub_in = write_file(tmp.path(), "sub_in.csv", "id\n100\n200\n");
+    let sub_out = out_path(tmp.path(), "sub_out.csv");
+    let sub_doc_value = json!({
+        "nodes": [
+            node("s", "src.csv", json!({ "path": sub_in, "hasHeader": true })),
+            node("k", "snk.csv", json!({ "path": sub_out, "hasHeader": true })),
+        ],
+        "edges": [main_edge("e", "s", "k")],
+    });
+    let sub_doc_path = out_path(tmp.path(), "sub.json");
+    std::fs::write(&sub_doc_path, serde_json::to_string(&sub_doc_value).unwrap()).unwrap();
+
+    // Parent pipeline: a row passes through ctl.runpipeline, which
+    // also triggers the sub-pipeline above. Downstream sink gets the
+    // pass-through row.
+    let parent_in = write_file(tmp.path(), "in.csv", "x\n1\n2\n3\n");
+    let parent_out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": parent_in, "hasHeader": true })),
+            node("rp", "ctl.runpipeline", json!({ "pipelineRef": sub_doc_path })),
+            node("k", "snk.csv", json!({ "path": parent_out, "hasHeader": true })),
+        ]),
+        json!([
+            main_edge("e1", "s", "rp"),
+            main_edge("e2", "rp", "k"),
+        ]),
+    ));
+    assert_eq!(r.status, "ok", "runpipeline failed: {:?}", r.error);
+
+    // Sub-pipeline produced its output.
+    let sub_n = count(&format!("read_csv_auto('{}')", sub_out));
+    assert_eq!(sub_n, 2, "sub-pipeline should have written 2 rows");
+
+    // Parent passed its 3 rows through.
+    let parent_n = count(&format!("read_csv_auto('{}')", parent_out));
+    assert_eq!(parent_n, 3, "parent should have passed 3 rows through ctl.runpipeline");
+}
+
+#[test]
+fn ctl_runpipeline_propagates_subpipeline_failure() {
+    // Sub-pipeline references a missing source file -> fails. Parent
+    // ctl.runpipeline should surface that failure with a clear message.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let missing = out_path(tmp.path(), "does_not_exist.csv");
+    let sub_out = out_path(tmp.path(), "sub_out.csv");
+    let sub_doc_value = json!({
+        "nodes": [
+            node("s", "src.csv", json!({ "path": missing, "hasHeader": true })),
+            node("k", "snk.csv", json!({ "path": sub_out, "hasHeader": true })),
+        ],
+        "edges": [main_edge("e", "s", "k")],
+    });
+    let sub_doc_path = out_path(tmp.path(), "sub.json");
+    std::fs::write(&sub_doc_path, serde_json::to_string(&sub_doc_value).unwrap()).unwrap();
+
+    let parent_in = write_file(tmp.path(), "in.csv", "x\n1\n");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": parent_in, "hasHeader": true })),
+            node("rp", "ctl.runpipeline", json!({ "pipelineRef": sub_doc_path })),
+        ]),
+        json!([main_edge("e1", "s", "rp")]),
+    ));
+    assert_ne!(r.status, "ok", "parent should have failed when sub-pipeline failed");
+    let err = format!("{:?}", r.error.unwrap_or_default());
+    assert!(
+        err.contains("ctl.runpipeline") || err.contains(&sub_doc_path),
+        "error should mention ctl.runpipeline or the sub path: {}",
+        err
+    );
 }
 
 #[test]

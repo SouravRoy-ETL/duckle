@@ -581,8 +581,8 @@ export const PALETTE: Category[] = [
                 id: 'ctl.pipeline',
                 label: 'Pipelines',
                 components: [
-                    ctl('runpipeline', 'Run Pipeline', 'planned'),
-                    ctl('trigger', 'Trigger Pipeline', 'planned'),
+                    ctl('runpipeline', 'Run Pipeline', 'available', 'Reads + executes another pipeline file inline as a side effect, then passes the upstream view through unchanged. Useful for triggering helper pipelines (refresh dimension tables, kick off cleanup) without composing their output into the parent.'),
+                    ctl('trigger', 'Trigger Pipeline', 'available', 'Alias of ctl.runpipeline; same executor branch.'),
                     ctl('checkpoint', 'Checkpoint', 'available', 'Pass rows through and also write a parquet snapshot to a path - the durable artifact a future run can read back via src.parquet'),
                 ],
             },
