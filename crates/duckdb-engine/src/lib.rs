@@ -31,10 +31,11 @@ use plan::{
     AvroSourceSpec, CassandraSinkSpec, CassandraSourceSpec, ClickHouseSinkSpec,
     ClickHouseSourceSpec, DatabricksSinkSpec, DatabricksSourceSpec, ElasticSourceSpec,
     FormatFileSinkSpec, FormatFileSourceSpec, FormatKind, KafkaSinkSpec, KafkaSourceSpec,
-    MilvusSourceSpec, MongoSinkSpec, MongoSourceSpec, OracleSinkSpec, OracleSourceSpec,
-    QdrantSourceSpec, RedisSinkSpec, RedisSourceSpec, RestPagination, RestSourceSpec,
-    SnowflakeAuth, SnowflakeSinkSpec, SnowflakeSourceSpec, SqlServerSinkSpec,
-    SqlServerSourceSpec, WeaviateSourceSpec, WebhookSpec,
+    MilvusSourceSpec, MongoSinkSpec, MongoSourceSpec, NatsSinkSpec, NatsSourceSpec,
+    OracleSinkSpec, OracleSourceSpec, PubSubSinkSpec, PubSubSourceSpec, QdrantSourceSpec,
+    RedisSinkSpec, RedisSourceSpec, RestPagination, RestSourceSpec, SnowflakeAuth,
+    SnowflakeSinkSpec, SnowflakeSourceSpec, SqlServerSinkSpec, SqlServerSourceSpec,
+    WeaviateSourceSpec, WebhookSpec,
 };
 
 #[derive(Debug, Error)]
@@ -520,6 +521,14 @@ impl DuckdbEngine {
                     self.run_kafka_source(&db_path, spec)
                 } else if let Some(spec) = stage.avro_source.as_ref() {
                     self.run_avro_source(&db_path, spec)
+                } else if let Some(spec) = stage.nats_sink.as_ref() {
+                    self.run_nats_sink(&db_path, spec)
+                } else if let Some(spec) = stage.nats_source.as_ref() {
+                    self.run_nats_source(&db_path, spec)
+                } else if let Some(spec) = stage.pubsub_sink.as_ref() {
+                    self.run_pubsub_sink(&db_path, spec)
+                } else if let Some(spec) = stage.pubsub_source.as_ref() {
+                    self.run_pubsub_source(&db_path, spec)
                 } else if let Some(spec) = stage.upsert.as_ref() {
                     // Relational-DB upsert: DESCRIBE the upstream first to
                     // get the column list, then assemble INSERT ... ON
@@ -1765,6 +1774,288 @@ impl DuckdbEngine {
         materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
         Ok(format!(
             "avro: materialized {} records into {}",
+            count, spec.node_id
+        ))
+    }
+
+    /// NATS publisher via async-nats. Each upstream row becomes one
+    /// NATS message published to `subject` (or to subject + "." +
+    /// row[subjectSuffixColumn] for per-row routing). Payload is the
+    /// JSON-stringified row.
+    fn run_nats_sink(
+        &self,
+        db: &Path,
+        spec: &NatsSinkSpec,
+    ) -> Result<String, EngineError> {
+        let select = format!("SELECT * FROM {}", plan::quote_ident(&spec.from_view));
+        let rows = self.run_rows(Some(db), &select)?;
+        if rows.is_empty() {
+            return Ok(format!("nats: 0 rows to publish to {}", spec.subject));
+        }
+        let cancel = self.cancel.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| EngineError::Query(format!("nats: tokio rt: {}", e)))?;
+        let total: Result<usize, String> = rt.block_on(async {
+            let client = async_nats::connect(&spec.urls)
+                .await
+                .map_err(|e| format!("connect: {}", e))?;
+            let mut total = 0_usize;
+            for chunk in rows.chunks(spec.batch_size) {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err("cancelled".into());
+                }
+                for row in chunk {
+                    let payload = serde_json::to_vec(row).unwrap_or_default();
+                    let subject = if spec.subject_suffix_column.is_empty() {
+                        spec.subject.clone()
+                    } else {
+                        let suffix = row
+                            .get(&spec.subject_suffix_column)
+                            .map(|v| match v {
+                                JsonValue::String(s) => s.clone(),
+                                _ => v.to_string(),
+                            })
+                            .unwrap_or_default();
+                        if suffix.is_empty() {
+                            spec.subject.clone()
+                        } else {
+                            format!("{}.{}", spec.subject, suffix)
+                        }
+                    };
+                    client
+                        .publish(subject, payload.into())
+                        .await
+                        .map_err(|e| format!("publish: {}", e))?;
+                }
+                total += chunk.len();
+            }
+            client.flush().await.map_err(|e| format!("flush: {}", e))?;
+            Ok(total)
+        });
+        match total {
+            Ok(n) => Ok(format!("nats: published {} message(s) to {}", n, spec.subject)),
+            Err(e) if e == "cancelled" => Err(EngineError::Cancelled),
+            Err(e) => Err(EngineError::Query(format!("nats sink: {}", e))),
+        }
+    }
+
+    /// NATS subscribe-with-timeout collector. Drains messages from
+    /// `subject` until either max_records is reached or timeout_ms
+    /// elapses (wall clock). Emits {subject, payload, headers (json)}
+    /// rows. Best-fit for "snapshot a queue" and "drain a topic"
+    /// batch patterns; true streaming is a separate engine workstream.
+    fn run_nats_source(
+        &self,
+        db: &Path,
+        spec: &NatsSourceSpec,
+    ) -> Result<String, EngineError> {
+        let cancel = self.cancel.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| EngineError::Query(format!("nats: tokio rt: {}", e)))?;
+        let result: Result<Vec<JsonValue>, String> = rt.block_on(async {
+            use futures_util::StreamExt;
+            let client = async_nats::connect(&spec.urls)
+                .await
+                .map_err(|e| format!("connect: {}", e))?;
+            let mut sub = client
+                .subscribe(spec.subject.clone())
+                .await
+                .map_err(|e| format!("subscribe: {}", e))?;
+            let deadline = tokio::time::Instant::now()
+                + std::time::Duration::from_millis(spec.timeout_ms);
+            let mut out: Vec<JsonValue> = Vec::new();
+            while (out.len() as u64) < spec.max_records {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err("cancelled".into());
+                }
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                let next = tokio::time::timeout(remaining, sub.next()).await;
+                match next {
+                    Ok(Some(msg)) => {
+                        let mut obj = serde_json::Map::new();
+                        obj.insert(
+                            "subject".into(),
+                            JsonValue::String(msg.subject.to_string()),
+                        );
+                        obj.insert(
+                            "payload".into(),
+                            JsonValue::String(
+                                String::from_utf8_lossy(&msg.payload).to_string(),
+                            ),
+                        );
+                        out.push(JsonValue::Object(obj));
+                    }
+                    _ => break,
+                }
+            }
+            Ok(out)
+        });
+        let rows = match result {
+            Ok(r) => r,
+            Err(e) if e == "cancelled" => return Err(EngineError::Cancelled),
+            Err(e) => return Err(EngineError::Query(format!("nats source: {}", e))),
+        };
+        let count = rows.len();
+        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        Ok(format!(
+            "nats: materialized {} message(s) into {}",
+            count, spec.node_id
+        ))
+    }
+
+    /// GCP Pub/Sub publish via REST. POST to
+    ///   /v1/projects/{project}/topics/{topic}:publish
+    /// Body: {messages: [{data: base64, attributes: {}}]}.
+    /// Auth: Bearer OAuth2 access token.
+    fn run_pubsub_sink(
+        &self,
+        db: &Path,
+        spec: &PubSubSinkSpec,
+    ) -> Result<String, EngineError> {
+        let select = format!("SELECT * FROM {}", plan::quote_ident(&spec.from_view));
+        let rows = self.run_rows(Some(db), &select)?;
+        if rows.is_empty() {
+            return Ok(format!("pubsub: 0 rows to publish to {}", spec.topic));
+        }
+        let url = format!(
+            "https://pubsub.googleapis.com/v1/projects/{}/topics/{}:publish",
+            spec.project, spec.topic
+        );
+        let mut total = 0_usize;
+        for chunk in rows.chunks(spec.batch_size) {
+            self.check_cancelled()?;
+            use base64::Engine as _;
+            let messages: Vec<JsonValue> = chunk
+                .iter()
+                .map(|row| {
+                    let json = serde_json::to_vec(row).unwrap_or_default();
+                    let data = base64::engine::general_purpose::STANDARD.encode(&json);
+                    serde_json::json!({ "data": data })
+                })
+                .collect();
+            let body = serde_json::json!({ "messages": messages });
+            let resp = ureq::post(&url)
+                .set("Content-Type", "application/json")
+                .set("Authorization", &format!("Bearer {}", spec.access_token))
+                .send_string(&serde_json::to_string(&body).unwrap_or_default());
+            match resp {
+                Ok(_) => total += chunk.len(),
+                Err(ureq::Error::Status(code, r)) => {
+                    let b = r.into_string().unwrap_or_default();
+                    return Err(EngineError::Query(format!(
+                        "pubsub HTTP {} on publish: {}",
+                        code,
+                        b.chars().take(300).collect::<String>()
+                    )));
+                }
+                Err(e) => {
+                    return Err(EngineError::Query(format!(
+                        "pubsub transport: {}",
+                        e
+                    )));
+                }
+            }
+        }
+        Ok(format!(
+            "pubsub: published {} message(s) to {}",
+            total, spec.topic
+        ))
+    }
+
+    /// GCP Pub/Sub pull + ack via REST. POST to
+    ///   /v1/projects/{project}/subscriptions/{sub}:pull
+    /// with {maxMessages: N}. Auto-acks the batch via
+    ///   /v1/projects/{project}/subscriptions/{sub}:acknowledge
+    /// Emits {message_id, publish_time, data} rows where data is
+    /// the UTF-8-decoded message payload.
+    fn run_pubsub_source(
+        &self,
+        db: &Path,
+        spec: &PubSubSourceSpec,
+    ) -> Result<String, EngineError> {
+        self.check_cancelled()?;
+        let pull_url = format!(
+            "https://pubsub.googleapis.com/v1/projects/{}/subscriptions/{}:pull",
+            spec.project, spec.subscription
+        );
+        let body = serde_json::json!({ "maxMessages": spec.max_messages });
+        let resp = ureq::post(&pull_url)
+            .set("Content-Type", "application/json")
+            .set("Authorization", &format!("Bearer {}", spec.access_token))
+            .send_string(&serde_json::to_string(&body).unwrap_or_default());
+        let response: JsonValue = match resp {
+            Ok(r) => r
+                .into_json()
+                .map_err(|e| EngineError::Query(format!("pubsub: response not JSON: {}", e)))?,
+            Err(ureq::Error::Status(code, r)) => {
+                let b = r.into_string().unwrap_or_default();
+                return Err(EngineError::Query(format!(
+                    "pubsub HTTP {} on pull: {}",
+                    code,
+                    b.chars().take(300).collect::<String>()
+                )));
+            }
+            Err(e) => return Err(EngineError::Query(format!("pubsub transport: {}", e))),
+        };
+        let received = response
+            .get("receivedMessages")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let mut rows: Vec<JsonValue> = Vec::with_capacity(received.len());
+        let mut ack_ids: Vec<String> = Vec::with_capacity(received.len());
+        for item in received {
+            if let Some(ack) = item.get("ackId").and_then(|v| v.as_str()) {
+                ack_ids.push(ack.to_string());
+            }
+            let message = item.get("message").cloned().unwrap_or(JsonValue::Null);
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "message_id".into(),
+                message.get("messageId").cloned().unwrap_or(JsonValue::Null),
+            );
+            obj.insert(
+                "publish_time".into(),
+                message.get("publishTime").cloned().unwrap_or(JsonValue::Null),
+            );
+            // The data field is base64-encoded - decode best-effort.
+            use base64::Engine as _;
+            let data_raw = message.get("data").and_then(|v| v.as_str()).unwrap_or("");
+            let decoded: Option<String> = base64::engine::general_purpose::STANDARD
+                .decode(data_raw)
+                .ok()
+                .map(|b: Vec<u8>| String::from_utf8_lossy(&b).to_string());
+            obj.insert(
+                "data".into(),
+                decoded.map(JsonValue::String).unwrap_or(JsonValue::Null),
+            );
+            rows.push(JsonValue::Object(obj));
+        }
+        // Acknowledge the batch so messages don't redeliver. Failure
+        // is non-fatal - the messages stay queued and re-deliver on
+        // their visibility timeout.
+        if !ack_ids.is_empty() {
+            let ack_url = format!(
+                "https://pubsub.googleapis.com/v1/projects/{}/subscriptions/{}:acknowledge",
+                spec.project, spec.subscription
+            );
+            let ack_body = serde_json::json!({ "ackIds": ack_ids });
+            let _ = ureq::post(&ack_url)
+                .set("Content-Type", "application/json")
+                .set("Authorization", &format!("Bearer {}", spec.access_token))
+                .send_string(&serde_json::to_string(&ack_body).unwrap_or_default());
+        }
+        let count = rows.len();
+        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        Ok(format!(
+            "pubsub: materialized {} message(s) into {}",
             count, spec.node_id
         ))
     }

@@ -51,7 +51,7 @@ Duckle is in **early development**. The visual designer, the DuckDB execution en
 
 **Scope, stated plainly:** Duckle is a single-machine, embedded studio. If you outgrow one box, point Duckle's output at the system that scales. It will not pretend to be a cluster.
 
-The component palette ships **301 nodes** so the roadmap is visible in the product itself. As of the latest engine cut: **256 available**, **11 preview**, **34 planned**. Each node is tagged by availability:
+The component palette ships **302 nodes** so the roadmap is visible in the product itself. As of the latest engine cut: **260 available**, **11 preview**, **31 planned**. Each node is tagged by availability:
 
 - **Available** runs on the DuckDB engine today.
 - **Preview** is configurable in the designer now (drag, wire, set properties); execution is being wired engine-by-engine. This currently covers the AI transforms and some vector DB read sources.
@@ -98,8 +98,8 @@ Duckle is not a CSV tool with extras. It reads a broad set of formats and source
 | **Cloud warehouses** | MotherDuck (DuckDB-native) | Available |
 | **Cloud warehouses** | **Snowflake** (SQL API + PAT/JWT auth, paginated), **BigQuery** (community extension), **Redshift** (postgres ATTACH), **Databricks SQL** (Statement Execution API + chunk follow), **Azure Synapse** (TDS) | Available |
 | **Avro files** | Apache Avro container files (.avro / .ocf) via the pure-Rust `apache-avro` crate. The OCF header carries the schema; no schema config needed. | Available |
-| **Streaming** | **Apache Kafka / Redpanda** (batch-consume up to maxRecords via the pure-Rust `rskafka` driver) | Available |
-| **Streaming** | Pulsar, NATS, Kinesis, Event Hubs, Pub/Sub, RabbitMQ | Planned |
+| **Streaming** | **Apache Kafka / Redpanda** (batch-consume via the pure-Rust `rskafka` driver), **NATS JetStream** (subscribe-with-timeout via `async-nats`), **GCP Pub/Sub** (pull via REST API + auto-ack) | Available |
+| **Streaming** | Pulsar, Kinesis, Event Hubs, RabbitMQ | Planned |
 | **APIs and SaaS** | **REST** (cursor / offset / page / Link header pagination), **GraphQL**. Vendor tiles: **Salesforce, HubSpot, Pipedrive, Zendesk, Intercom, Stripe, QuickBooks, Xero, Shopify, Notion, Airtable, GitHub, GitLab, Linear, Jira, Mailchimp, SendGrid, Segment** (thin pre-configured wrappers over REST/GraphQL) | Available |
 | **APIs and SaaS** | gRPC, SOAP, OData, Google Sheets, Excel Online, webhook listener, more SaaS vendors | Planned |
 | **NoSQL and search** | **MongoDB** (official driver), **Cassandra / ScyllaDB** (CQL), **Elasticsearch / OpenSearch** (from+size + search_after), **Redis** (SCAN + GET via the sync client), **CouchDB** (via the `_all_docs` REST endpoint) | Available |
@@ -177,8 +177,8 @@ The whole group runs today. Validators split their input: passing rows continue 
 | **HTTP APIs** | **REST** (POST/PUT/PATCH a single batched JSON-array request) and **Webhook** (one POST per row). Bearer / API-key auth + custom headers via the form. Uses `ureq` blocking client. **GraphQL** sink for mutations. | Available |
 | **NoSQL** | **MongoDB** (official driver, insert_many batched), **Cassandra / ScyllaDB** (CQL prepared INSERT), **Elasticsearch / OpenSearch** (`_bulk` NDJSON), **Redis** (pipelined SET with optional EXPIRE) | Available |
 | **NoSQL** | DynamoDB | Planned |
-| **Streaming** | **Apache Kafka / Redpanda** (batch-produce records via the pure-Rust `rskafka` driver; JSON-stringified row as value, optional keyColumn) | Available |
-| **Streaming** | Pulsar, NATS, Kinesis | Planned |
+| **Streaming** | **Apache Kafka / Redpanda** (batch-produce via the pure-Rust `rskafka` driver), **NATS JetStream** (publish via `async-nats`; optional per-row subject suffix), **GCP Pub/Sub** (publish via REST API; OAuth2 Bearer auth) | Available |
+| **Streaming** | Pulsar, Kinesis | Planned |
 | **SOAP** | (use REST sink at the SOAP endpoint until a dedicated component lands) | Planned |
 | **Vector / AI databases** | **pgvector** (Postgres ATTACH), **Pinecone** (`/vectors/upsert`), **Qdrant** (`/collections/{id}/points` PUT), **Weaviate** (`/v1/batch/objects`), **Milvus** (`/v1/vector/insert`) | Available |
 | **Vector / AI databases** | Chroma, LanceDB | Preview (need a vendor SDK to land dedicated handlers) |

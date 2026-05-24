@@ -6202,6 +6202,100 @@ fn snk_and_src_kafka_roundtrip_via_real_broker() {
 }
 
 #[test]
+fn snk_and_src_nats_roundtrip_via_real_urls() {
+    // Env-gated like Kafka / Mongo / Redis. Set DUCKLE_NATS_URL to a
+    // working comma-separated list (e.g. nats://127.0.0.1:4222). Uses
+    // a unique subject per test run so concurrent test invocations
+    // don't collide.
+    let engine = engine_or_skip!();
+    let urls = match std::env::var("DUCKLE_NATS_URL").ok() {
+        Some(u) if !u.is_empty() => u,
+        _ => {
+            eprintln!("skipping: set DUCKLE_NATS_URL to run NATS tests");
+            return;
+        }
+    };
+    let subject = format!("duckle.test.{}", std::process::id());
+
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,alpha\n2,beta\n3,gamma\n");
+
+    // src.nats needs to be running BEFORE the publisher so the
+    // subscription is alive when messages arrive. Easiest: spawn the
+    // publisher in a background thread after a brief delay.
+    let urls_pub = urls.clone();
+    let subj_pub = subject.clone();
+    let csv_path = csv.clone();
+    let pub_handle = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let engine_inner = engine_or_skip!();
+        let r1 = engine_inner.execute_pipeline(&doc(
+            json!([
+                node("s", "src.csv", json!({ "path": csv_path, "hasHeader": true })),
+                node("n", "snk.nats", json!({
+                    "urls": &urls_pub,
+                    "subject": &subj_pub,
+                })),
+            ]),
+            json!([main_edge("e", "s", "n")]),
+        ));
+        assert_eq!(r1.status, "ok", "nats sink failed: {:?}", r1.error);
+    });
+
+    let out = out_path(tmp.path(), "nats.csv");
+    let r2 = engine.execute_pipeline(&doc(
+        json!([
+            node("n", "src.nats", json!({
+                "urls": &urls,
+                "subject": &subject,
+                "maxRecords": 3,
+                "timeoutMs": 5000,
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e", "n", "k")]),
+    ));
+    let _ = pub_handle.join();
+    assert_eq!(r2.status, "ok", "nats source failed: {:?}", r2.error);
+    let n = count(&format!("read_csv_auto('{}')", out));
+    assert_eq!(n, 3, "expected 3 messages collected, got {}", n);
+}
+
+#[test]
+fn snk_pubsub_routes_through_pubsub_handler_not_preview_fallback() {
+    // snk.pubsub posts to https://pubsub.googleapis.com which we
+    // can't intercept in unit-test land. So this test asserts the
+    // PLANNER accepts the component_id - if my arm placement is
+    // wrong (the kind of bug that bit snk.yaml in CI), the executor
+    // would fall through to build_sink_sql which would return
+    // 'Sink snk.pubsub is not yet implemented'. We hit a fake
+    // endpoint, so the network call fails - but the failure mode
+    // must be a Pub/Sub HTTP error, not the planner fallthrough.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,a\n");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("p", "snk.pubsub", json!({
+                "project": "fake-project",
+                "topic": "fake-topic",
+                "accessToken": "ya29.fake_token_will_401",
+            })),
+        ]),
+        json!([main_edge("e", "s", "p")]),
+    ));
+    if r.status != "ok" {
+        let msg = r.error.unwrap_or_default();
+        assert!(
+            !msg.contains("not yet implemented"),
+            "snk.pubsub fell into the planner's 'not yet implemented' fallback - the arm placement is wrong. Error: {}",
+            msg
+        );
+    }
+}
+
+#[test]
 fn snk_and_src_redis_roundtrip_via_real_url() {
     // Env-gated like the mongo / postgres / mysql tests. Set
     // DUCKLE_REDIS_URL to a working redis URL (e.g. redis://127.0.0.1:6379/0)

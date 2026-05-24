@@ -71,6 +71,8 @@ rskafka = "0.5"
 # Kafka topics that publish Avro-encoded payloads, and reads the
 # .avro / .ocf files that exporters drop on object storage.
 apache-avro = "0.17"
+# NATS / JetStream. Pure-Rust client by the NATS team.
+async-nats = "0.37"
 
 [features]
 default = ["oracle"]

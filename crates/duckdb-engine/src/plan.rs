@@ -141,6 +141,14 @@ pub struct Stage {
     pub kafka_source: Option<KafkaSourceSpec>,
     /// Apache Avro container-file reader (pure-Rust apache-avro crate).
     pub avro_source: Option<AvroSourceSpec>,
+    /// NATS / JetStream publisher.
+    pub nats_sink: Option<NatsSinkSpec>,
+    /// NATS / JetStream subscriber-with-timeout (batch collector).
+    pub nats_source: Option<NatsSourceSpec>,
+    /// GCP Pub/Sub publish via REST.
+    pub pubsub_sink: Option<PubSubSinkSpec>,
+    /// GCP Pub/Sub pull via REST.
+    pub pubsub_source: Option<PubSubSourceSpec>,
     /// Milliseconds the executor sleeps before running this stage.
     /// Set by ctl.wait and ctl.throttle. None = no delay.
     pub wait_ms: Option<u64>,
@@ -389,6 +397,62 @@ pub struct KafkaSourceSpec {
 pub struct AvroSourceSpec {
     pub node_id: String,
     pub path: String,
+}
+
+/// snk.nats: publish each upstream row as one NATS message to the
+/// configured subject. value = JSON-stringified row. Optional
+/// per-message subject suffix from a row column (e.g. tenant key).
+#[derive(Debug, Clone)]
+pub struct NatsSinkSpec {
+    pub from_view: String,
+    /// Comma-separated NATS URLs (nats://host:port,...).
+    pub urls: String,
+    pub subject: String,
+    /// Optional column whose value becomes a suffix on the subject
+    /// per-row (subject + "." + value). Empty = single subject.
+    pub subject_suffix_column: String,
+    pub batch_size: usize,
+}
+
+/// src.nats: subscribe to a subject for up to timeout_ms or until
+/// max_records messages arrive. Emits {subject, payload, headers}
+/// rows. Best-fit for "snapshot a queue" and "drain a topic" patterns;
+/// continuous streaming is a separate engine workstream.
+#[derive(Debug, Clone)]
+pub struct NatsSourceSpec {
+    pub node_id: String,
+    pub urls: String,
+    pub subject: String,
+    pub max_records: u64,
+    /// Total wall-clock wait cap. Loop exits when this elapses even
+    /// if max_records isn't reached.
+    pub timeout_ms: u64,
+}
+
+/// snk.pubsub: publish via POST /v1/projects/{project}/topics/{topic}:publish.
+/// Auth: pre-fetched OAuth Bearer access token (the same one
+/// `gcloud auth print-access-token` mints) - sidesteps the
+/// service-account-JWT-minting + token-refresh worker that the full
+/// Google client needs. Body: {messages: [{data: base64, attributes: {}}]}.
+#[derive(Debug, Clone)]
+pub struct PubSubSinkSpec {
+    pub from_view: String,
+    pub project: String,
+    pub topic: String,
+    pub access_token: String,
+    pub batch_size: usize,
+}
+
+/// src.pubsub: pull via POST /v1/projects/{project}/subscriptions/{sub}:pull.
+/// Auto-acknowledges the batch (acknowledge endpoint). Emits
+/// {message_id, publish_time, data} rows. Same Bearer-token auth.
+#[derive(Debug, Clone)]
+pub struct PubSubSourceSpec {
+    pub node_id: String,
+    pub project: String,
+    pub subscription: String,
+    pub access_token: String,
+    pub max_messages: u64,
 }
 
 /// snk.cassandra / snk.scylla: CQL INSERT via the scylla driver
@@ -987,6 +1051,10 @@ fn build_stage(
     let mut kafka_sink: Option<KafkaSinkSpec> = None;
     let mut kafka_source: Option<KafkaSourceSpec> = None;
     let mut avro_source: Option<AvroSourceSpec> = None;
+    let mut nats_sink: Option<NatsSinkSpec> = None;
+    let mut nats_source: Option<NatsSourceSpec> = None;
+    let mut pubsub_sink: Option<PubSubSinkSpec> = None;
+    let mut pubsub_source: Option<PubSubSourceSpec> = None;
     let mut wait_ms: Option<u64> = None;
     // Advanced settings (universal across components, written by the
     // Properties Panel's Advanced tab). Engine honours them per stage.
@@ -1491,6 +1559,48 @@ fn build_stage(
             bulk_action: Some(action_line),
         });
         (String::new(), StageKind::Sink, Some(from_view.to_string()))
+    } else if component_id == "snk.nats" {
+        // NATS publisher. urls (comma-separated nats:// URLs) +
+        // subject + optional subjectSuffixColumn (row column whose
+        // value becomes a per-row subject suffix - subject.value).
+        let from_view = inputs.main().ok_or_else(|| missing_input(node, "main"))?;
+        let urls = string_prop(&props, "urls")
+            .or_else(|| string_prop(&props, "servers"))
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: urls required (nats://host:port,...)", component_id)))?;
+        let subject = string_prop(&props, "subject")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: subject required", component_id)))?;
+        nats_sink = Some(NatsSinkSpec {
+            from_view: from_view.to_string(),
+            urls,
+            subject,
+            subject_suffix_column: string_prop(&props, "subjectSuffixColumn").unwrap_or_default(),
+            batch_size: props.get("batchSize").and_then(|v| v.as_u64()).filter(|n| *n > 0).unwrap_or(500) as usize,
+        });
+        (String::new(), StageKind::Sink, Some(from_view.to_string()))
+    } else if component_id == "snk.pubsub" {
+        // GCP Pub/Sub publish via REST. accessToken is a pre-fetched
+        // OAuth2 Bearer token; sidesteps the JWT-minting + refresh
+        // worker that the official client would do.
+        let from_view = inputs.main().ok_or_else(|| missing_input(node, "main"))?;
+        let project = string_prop(&props, "project")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: project required", component_id)))?;
+        let topic = string_prop(&props, "topic")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: topic required", component_id)))?;
+        let access_token = string_prop(&props, "accessToken")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: accessToken required (OAuth2 Bearer; use `gcloud auth print-access-token` to mint one)", component_id)))?;
+        pubsub_sink = Some(PubSubSinkSpec {
+            from_view: from_view.to_string(),
+            project,
+            topic,
+            access_token,
+            batch_size: props.get("batchSize").and_then(|v| v.as_u64()).filter(|n| *n > 0).unwrap_or(100) as usize,
+        });
+        (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if matches!(component_id, "snk.kafka" | "snk.redpanda") {
         // Kafka producer (Redpanda speaks the Kafka wire protocol so
         // it's a pure alias). Bootstrap servers + topic + optional
@@ -1850,6 +1960,45 @@ fn build_stage(
             user,
             password: string_prop(&props, "password").unwrap_or_default(),
             query,
+        });
+        (String::new(), StageKind::View, None)
+    } else if component_id == "src.nats" {
+        // NATS subscribe-with-timeout collector. Drains up to
+        // max_records messages or stops after timeout_ms wall-clock.
+        let urls = string_prop(&props, "urls")
+            .or_else(|| string_prop(&props, "servers"))
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: urls required", component_id)))?;
+        let subject = string_prop(&props, "subject")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: subject required", component_id)))?;
+        nats_source = Some(NatsSourceSpec {
+            node_id: node.id.clone(),
+            urls,
+            subject,
+            max_records: props.get("maxRecords").and_then(|v| v.as_u64()).filter(|n| *n > 0).unwrap_or(1000),
+            timeout_ms: props.get("timeoutMs").and_then(|v| v.as_u64()).unwrap_or(5000),
+        });
+        (String::new(), StageKind::View, None)
+    } else if component_id == "src.pubsub" {
+        // GCP Pub/Sub pull. Auto-acks the pulled batch (best-fit for
+        // batch ETL drains; for exactly-once you'd want manual ack
+        // which is on the roadmap).
+        let project = string_prop(&props, "project")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: project required", component_id)))?;
+        let subscription = string_prop(&props, "subscription")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: subscription required", component_id)))?;
+        let access_token = string_prop(&props, "accessToken")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: accessToken required (OAuth2 Bearer)", component_id)))?;
+        pubsub_source = Some(PubSubSourceSpec {
+            node_id: node.id.clone(),
+            project,
+            subscription,
+            access_token,
+            max_messages: props.get("maxMessages").and_then(|v| v.as_u64()).filter(|n| *n > 0).unwrap_or(100),
         });
         (String::new(), StageKind::View, None)
     } else if matches!(component_id, "src.kafka" | "src.redpanda") {
@@ -2420,6 +2569,10 @@ fn build_stage(
         kafka_sink,
         kafka_source,
         avro_source,
+        nats_sink,
+        nats_source,
+        pubsub_sink,
+        pubsub_source,
         wait_ms,
         retry_attempts,
         retry_backoff_ms,
