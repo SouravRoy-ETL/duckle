@@ -128,10 +128,10 @@ export const PALETTE: Category[] = [
                 id: 'src.warehouses',
                 label: 'Cloud Warehouses',
                 components: [
-                    src('snowflake', 'Snowflake', 'planned', 'REST SQL API (separate commit) - planned next'),
+                    src('snowflake', 'Snowflake', 'available', 'Read Snowflake via the SQL API (/api/v2/statements). Supports PAT and JWT RS256 auth; engine materializes inline result sets as a DuckDB table for downstream stages.'),
                     src('bigquery', 'BigQuery', 'available', 'Read tables from BigQuery via the duckdb-bigquery community extension - uses standard GCP credential discovery'),
                     src('redshift', 'Redshift', 'available', 'Read Redshift via the postgres ATTACH path (Redshift speaks Postgres wire on port 5439)'),
-                    src('databricks', 'Databricks SQL', 'planned', 'REST SQL API (separate commit) - planned next'),
+                    src('databricks', 'Databricks SQL', 'available', 'Read Databricks via the SQL Statement Execution API with PAT Bearer auth. Engine materializes inline result sets as a DuckDB table for downstream stages.'),
                     src('synapse', 'Azure Synapse', 'planned'),
                     src('motherduck', 'MotherDuck', 'available', 'Read from MotherDuck via ATTACH md:'),
                 ],

@@ -59,6 +59,12 @@ pub struct Stage {
     /// Databricks SQL Statement Execution API sink. Same pattern as
     /// Snowflake; stage SQL stays empty.
     pub databricks_sink: Option<DatabricksSinkSpec>,
+    /// Snowflake SQL API source. When set, the executor POSTs the
+    /// SELECT, parses the response, writes it as JSON to a temp file,
+    /// then materializes node_id from the file via read_json_auto.
+    pub snowflake_source: Option<SnowflakeSourceSpec>,
+    /// Databricks SQL Statement Execution API source. Same shape.
+    pub databricks_source: Option<DatabricksSourceSpec>,
     /// Milliseconds the executor sleeps before running this stage.
     /// Set by ctl.wait and ctl.throttle. None = no delay.
     pub wait_ms: Option<u64>,
@@ -117,6 +123,38 @@ pub struct SnowflakeSinkSpec {
     pub role: Option<String>,
     pub table: String,
     pub batch_size: usize,
+}
+
+/// src.snowflake: SQL API read. Sends a SELECT (either user-provided
+/// `query` or `SELECT * FROM <database>.<schema>.<table>` when only
+/// the table info is given). The executor materializes the response
+/// as a DuckDB table via read_json_auto.
+#[derive(Debug, Clone)]
+pub struct SnowflakeSourceSpec {
+    pub node_id: String,
+    pub account: String,
+    pub endpoint: Option<String>,
+    pub auth: SnowflakeAuth,
+    pub database: Option<String>,
+    pub schema: Option<String>,
+    pub warehouse: Option<String>,
+    pub role: Option<String>,
+    pub query: String,
+}
+
+/// src.databricks: SQL Statement Execution API read. Same shape as
+/// the Snowflake source - sends a SELECT, materializes the response.
+#[derive(Debug, Clone)]
+pub struct DatabricksSourceSpec {
+    pub node_id: String,
+    pub workspace: String,
+    pub endpoint: Option<String>,
+    pub pat: String,
+    pub warehouse_id: String,
+    pub catalog: Option<String>,
+    pub schema: Option<String>,
+    pub query: String,
+    pub wait_timeout_seconds: u64,
 }
 
 /// snk.databricks: Databricks SQL Statement Execution API insert.
@@ -475,6 +513,8 @@ fn build_stage(
     let mut webhook: Option<WebhookSpec> = None;
     let mut snowflake_sink: Option<SnowflakeSinkSpec> = None;
     let mut databricks_sink: Option<DatabricksSinkSpec> = None;
+    let mut snowflake_source: Option<SnowflakeSourceSpec> = None;
+    let mut databricks_source: Option<DatabricksSourceSpec> = None;
     let mut wait_ms: Option<u64> = None;
     // Advanced settings (universal across components, written by the
     // Properties Panel's Advanced tab). Engine honours them per stage.
@@ -937,6 +977,104 @@ fn build_stage(
             ),
         };
         (copy, StageKind::Sink, Some(from_view.to_string()))
+    } else if component_id == "src.snowflake" {
+        // Snowflake source. User picks PAT or JWT auth (same shape
+        // as snk.snowflake) and provides either a free 'query' or
+        // (database, schema, tableName) which the engine turns into
+        // 'SELECT * FROM database.schema.tableName'.
+        let account = string_prop(&props, "account")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: account required", component_id)))?;
+        let auth_type = string_prop(&props, "authType").unwrap_or_else(|| "pat".into());
+        let auth = match auth_type.as_str() {
+            "jwt" => {
+                let user = string_prop(&props, "user")
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| EngineError::Config(format!("{}: user required for JWT auth", component_id)))?;
+                let pem = string_prop(&props, "privateKeyPem")
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        string_prop(&props, "privateKeyPath")
+                            .filter(|s| !s.is_empty())
+                            .and_then(|p| std::fs::read_to_string(&p).ok())
+                    })
+                    .ok_or_else(|| EngineError::Config(format!("{}: privateKeyPem or privateKeyPath required for JWT auth", component_id)))?;
+                SnowflakeAuth::Jwt { user, private_key_pem: pem }
+            }
+            _ => {
+                let token = string_prop(&props, "pat")
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| EngineError::Config(format!("{}: pat required for PAT auth", component_id)))?;
+                SnowflakeAuth::Pat { token }
+            }
+        };
+        let database = string_prop(&props, "database").filter(|s| !s.is_empty());
+        let schema = string_prop(&props, "schema").filter(|s| !s.is_empty());
+        let query = string_prop(&props, "query")
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                let table = string_prop(&props, "tableName").filter(|s| !s.is_empty())?;
+                let db = database.clone()?;
+                let sch = schema.clone().unwrap_or_else(|| "PUBLIC".into());
+                Some(format!(
+                    "SELECT * FROM \"{}\".\"{}\".\"{}\"",
+                    db, sch, table
+                ))
+            })
+            .ok_or_else(|| EngineError::Config(format!("{}: query or (database+schema+tableName) required", component_id)))?;
+        snowflake_source = Some(SnowflakeSourceSpec {
+            node_id: node.id.clone(),
+            account,
+            endpoint: string_prop(&props, "endpoint").filter(|s| !s.is_empty()),
+            auth,
+            database,
+            schema,
+            warehouse: string_prop(&props, "warehouse").filter(|s| !s.is_empty()),
+            role: string_prop(&props, "role").filter(|s| !s.is_empty()),
+            query,
+        });
+        (String::new(), StageKind::View, None)
+    } else if component_id == "src.databricks" {
+        // Databricks SQL source. Same shape as snk.databricks but reads.
+        let workspace = string_prop(&props, "workspace")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: workspace required", component_id)))?;
+        let pat = string_prop(&props, "pat")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: pat required", component_id)))?;
+        let warehouse_id = string_prop(&props, "warehouseId")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: warehouseId required", component_id)))?;
+        let catalog = string_prop(&props, "catalog").filter(|s| !s.is_empty());
+        let schema = string_prop(&props, "schema").filter(|s| !s.is_empty());
+        let query = string_prop(&props, "query")
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                let table = string_prop(&props, "tableName").filter(|s| !s.is_empty())?;
+                let qualified = match (&catalog, &schema) {
+                    (Some(c), Some(s)) => format!("`{}`.`{}`.`{}`", c, s, table),
+                    (None, Some(s)) => format!("`{}`.`{}`", s, table),
+                    _ => format!("`{}`", table),
+                };
+                Some(format!("SELECT * FROM {}", qualified))
+            })
+            .ok_or_else(|| EngineError::Config(format!("{}: query or (catalog+schema+tableName) required", component_id)))?;
+        databricks_source = Some(DatabricksSourceSpec {
+            node_id: node.id.clone(),
+            workspace,
+            endpoint: string_prop(&props, "endpoint").filter(|s| !s.is_empty()),
+            pat,
+            warehouse_id,
+            catalog,
+            schema,
+            query,
+            wait_timeout_seconds: props
+                .get("waitTimeoutSeconds")
+                .and_then(|v| v.as_u64())
+                .filter(|n| *n > 0 && *n <= 50)
+                .unwrap_or(30),
+        });
+        (String::new(), StageKind::View, None)
     } else if component_id == "ctl.switch" {
         // Switch materializes one table per case + default; it has no
         // main output table, so the count_rows fallback in the executor
@@ -994,6 +1132,8 @@ fn build_stage(
         webhook,
         snowflake_sink,
         databricks_sink,
+        snowflake_source,
+        databricks_source,
         wait_ms,
         retry_attempts,
         retry_backoff_ms,

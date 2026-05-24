@@ -773,6 +773,62 @@ function synthDbSink(comp: ComponentDef): ComponentManifest {
 }
 
 function synthWarehouseSource(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'src.snowflake') {
+        return base(comp, [
+            {
+                label: 'Snowflake account',
+                fields: [
+                    { key: 'account', label: 'Account identifier', kind: 'text', required: true, placeholder: 'xy12345.us-east-1' },
+                    {
+                        key: 'authType',
+                        label: 'Auth type',
+                        kind: 'select',
+                        defaultValue: 'pat',
+                        options: [
+                            { label: 'Personal Access Token (Bearer)', value: 'pat' },
+                            { label: 'JWT (key-pair, RS256)', value: 'jwt' },
+                        ],
+                    },
+                    { key: 'pat', label: 'Personal Access Token (PAT mode)', kind: 'text', placeholder: '••••••••' },
+                    { key: 'user', label: 'User (JWT mode)', kind: 'text', placeholder: 'MY_USER' },
+                    { key: 'privateKeyPath', label: 'PEM private key path (JWT mode)', kind: 'file-path' },
+                    { key: 'warehouse', label: 'Warehouse', kind: 'text', placeholder: 'compute_wh' },
+                    { key: 'role', label: 'Role', kind: 'text', placeholder: 'analyst' },
+                ],
+            },
+            {
+                label: 'Query',
+                fields: [
+                    { key: 'database', label: 'Database', kind: 'text', placeholder: 'MYDB' },
+                    { key: 'schema', label: 'Schema', kind: 'text', placeholder: 'PUBLIC' },
+                    { key: 'tableName', label: 'Table (for SELECT *)', kind: 'text', placeholder: 'orders' },
+                    { key: 'query', label: 'Or custom SQL', kind: 'expression', rows: 4, placeholder: 'SELECT * FROM ...' },
+                ],
+            },
+        ]);
+    }
+    if (comp.id === 'src.databricks') {
+        return base(comp, [
+            {
+                label: 'Databricks workspace',
+                fields: [
+                    { key: 'workspace', label: 'Workspace host', kind: 'text', required: true, placeholder: 'dbc-xxxxxxxx.cloud.databricks.com' },
+                    { key: 'pat', label: 'Personal Access Token', kind: 'text', required: true, placeholder: '••••••••' },
+                    { key: 'warehouseId', label: 'SQL warehouse ID', kind: 'text', required: true, placeholder: '0a1b2c3d4e5f6g7h' },
+                ],
+            },
+            {
+                label: 'Query',
+                fields: [
+                    { key: 'catalog', label: 'Catalog', kind: 'text', placeholder: 'main' },
+                    { key: 'schema', label: 'Schema', kind: 'text', placeholder: 'default' },
+                    { key: 'tableName', label: 'Table (for SELECT *)', kind: 'text', placeholder: 'orders' },
+                    { key: 'query', label: 'Or custom SQL', kind: 'expression', rows: 4, placeholder: 'SELECT * FROM ...' },
+                    { key: 'waitTimeoutSeconds', label: 'Sync wait (seconds, max 50)', kind: 'integer', defaultValue: 30 },
+                ],
+            },
+        ]);
+    }
     if (comp.id === 'src.redshift') {
         // Redshift speaks the Postgres wire protocol; reuse the same
         // libpq-style connection form (host/port/db/user/password) as

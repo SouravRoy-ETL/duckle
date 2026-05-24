@@ -2444,6 +2444,149 @@ fn text_reverse_repeat_and_compare() {
 }
 
 #[test]
+fn src_snowflake_materializes_inline_result_set() {
+    // Mock /api/v2/statements that returns Snowflake's inline-result
+    // shape. Verifies the engine materializes the response as a
+    // DuckDB table that downstream stages can read.
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let engine = engine_or_skip!();
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+
+    let response_body = br#"{"code":"090001","statementHandle":"abc","resultSetMetaData":{"rowType":[{"name":"id","type":"fixed"},{"name":"name","type":"text"}]},"data":[["1","alice"],["2","bob"]]}"#;
+    let response_len = response_body.len();
+
+    let handle = std::thread::spawn(move || {
+        for stream in listener.incoming().take(1) {
+            let mut stream = match stream { Ok(s) => s, Err(_) => break };
+            stream.set_read_timeout(Some(Duration::from_millis(250))).ok();
+            stream.set_nodelay(true).ok();
+            let mut buf = Vec::with_capacity(8192);
+            let mut chunk = [0u8; 4096];
+            for _ in 0..16 {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            let _ = tx.send(buf);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_len
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(response_body);
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = out_path(tmp.path(), "out.csv");
+    let endpoint = format!("http://127.0.0.1:{}/api/v2/statements", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("sf", "src.snowflake", json!({
+                "account": "test-account",
+                "endpoint": endpoint,
+                "authType": "pat",
+                "pat": "secret-pat",
+                "query": "SELECT id, name FROM users"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "sf", "k")]),
+    ));
+    let _captured = rx.recv_timeout(Duration::from_secs(5)).expect("expected Snowflake request");
+    let _ = handle.join();
+    assert_eq!(r.status, "ok", "snowflake source failed: {:?}", r.error);
+    let n = count(&format!("read_csv_auto('{}')", out));
+    assert_eq!(n, 2);
+    let name1 = scalar_string(&format!(
+        "SELECT name FROM read_csv_auto('{}') WHERE id = '1'",
+        out
+    ));
+    assert_eq!(name1, "alice");
+}
+
+#[test]
+fn src_databricks_materializes_inline_result_set() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let engine = engine_or_skip!();
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+
+    let response_body = br#"{"statement_id":"abc-123","status":{"state":"SUCCEEDED"},"manifest":{"schema":{"columns":[{"name":"id","type_text":"INT"},{"name":"name","type_text":"STRING"}]}},"result":{"data_array":[["10","carol"],["20","dan"]]}}"#;
+    let response_len = response_body.len();
+
+    let handle = std::thread::spawn(move || {
+        for stream in listener.incoming().take(1) {
+            let mut stream = match stream { Ok(s) => s, Err(_) => break };
+            stream.set_read_timeout(Some(Duration::from_millis(250))).ok();
+            stream.set_nodelay(true).ok();
+            let mut buf = Vec::with_capacity(8192);
+            let mut chunk = [0u8; 4096];
+            for _ in 0..16 {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            let _ = tx.send(buf);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_len
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(response_body);
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = out_path(tmp.path(), "out.csv");
+    let endpoint = format!("http://127.0.0.1:{}/api/2.0/sql/statements/", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("db", "src.databricks", json!({
+                "workspace": "dbc-test.cloud.databricks.com",
+                "endpoint": endpoint,
+                "pat": "dapi-secret",
+                "warehouseId": "wh-abc",
+                "query": "SELECT id, name FROM users"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "db", "k")]),
+    ));
+    let _captured = rx.recv_timeout(Duration::from_secs(5)).expect("expected Databricks request");
+    let _ = handle.join();
+    assert_eq!(r.status, "ok", "databricks source failed: {:?}", r.error);
+    let n = count(&format!("read_csv_auto('{}')", out));
+    assert_eq!(n, 2);
+    let name1 = scalar_string(&format!(
+        "SELECT name FROM read_csv_auto('{}') WHERE id = '10'",
+        out
+    ));
+    assert_eq!(name1, "carol");
+}
+
+#[test]
 fn snk_databricks_posts_multirow_insert() {
     // Mock HTTP listener pretends to be Databricks's
     // /api/2.0/sql/statements/. Verifies multi-row INSERT, Bearer PAT,

@@ -27,7 +27,10 @@ pub mod history;
 pub mod plan;
 pub use history::{append_run_record, load_run_history, RunRecord};
 pub use plan::{CompiledPipeline, PipelineDoc, Stage, StageKind};
-use plan::{DatabricksSinkSpec, SnowflakeAuth, SnowflakeSinkSpec, WebhookSpec};
+use plan::{
+    DatabricksSinkSpec, DatabricksSourceSpec, SnowflakeAuth, SnowflakeSinkSpec,
+    SnowflakeSourceSpec, WebhookSpec,
+};
 
 #[derive(Debug, Error)]
 pub enum EngineError {
@@ -347,6 +350,12 @@ impl DuckdbEngine {
                     // Databricks SQL Statement Execution API: same shape
                     // as Snowflake, different body keys + backtick quoting.
                     self.run_databricks_sink(&db_path, &secret_prefix, spec)
+                } else if let Some(spec) = stage.snowflake_source.as_ref() {
+                    // Snowflake source: POST SELECT, parse response,
+                    // materialize as node_id via read_json_auto.
+                    self.run_snowflake_source(&db_path, spec)
+                } else if let Some(spec) = stage.databricks_source.as_ref() {
+                    self.run_databricks_source(&db_path, spec)
                 } else if let Some(spec) = stage.upsert.as_ref() {
                     // Relational-DB upsert: DESCRIBE the upstream first to
                     // get the column list, then assemble INSERT ... ON
@@ -773,6 +782,173 @@ impl DuckdbEngine {
         ))
     }
 
+    /// Snowflake SQL API source. POSTs the SELECT, parses
+    /// resultSetMetaData.rowType for column names + data array,
+    /// writes rows as a JSON array file, then CREATEs node_id from
+    /// it via read_json_auto. Inline results only - large queries
+    /// that return a statementHandle for async/paginated retrieval
+    /// surface a clear error pointing the user at LIMIT.
+    fn run_snowflake_source(
+        &self,
+        db: &Path,
+        spec: &SnowflakeSourceSpec,
+    ) -> Result<String, EngineError> {
+        let url = spec.endpoint.clone().unwrap_or_else(|| {
+            format!(
+                "https://{}.snowflakecomputing.com/api/v2/statements",
+                spec.account
+            )
+        });
+        let auth_header = build_snowflake_auth_header(&spec.account, &spec.auth)?;
+        let mut body_obj = serde_json::Map::new();
+        body_obj.insert("statement".into(), JsonValue::String(spec.query.clone()));
+        body_obj.insert("timeout".into(), JsonValue::Number(60.into()));
+        if let Some(db) = &spec.database {
+            body_obj.insert("database".into(), JsonValue::String(db.clone()));
+        }
+        if let Some(s) = &spec.schema {
+            body_obj.insert("schema".into(), JsonValue::String(s.clone()));
+        }
+        if let Some(wh) = &spec.warehouse {
+            body_obj.insert("warehouse".into(), JsonValue::String(wh.clone()));
+        }
+        if let Some(role) = &spec.role {
+            body_obj.insert("role".into(), JsonValue::String(role.clone()));
+        }
+        let body = serde_json::to_string(&JsonValue::Object(body_obj))
+            .unwrap_or_else(|_| "{}".into());
+        let mut req = ureq::post(&url)
+            .set("Authorization", &auth_header)
+            .set("Content-Type", "application/json")
+            .set("Accept", "application/json");
+        if matches!(spec.auth, SnowflakeAuth::Jwt { .. }) {
+            req = req.set("X-Snowflake-Authorization-Token-Type", "KEYPAIR_JWT");
+        }
+        let response: JsonValue = match req.send_string(&body) {
+            Ok(r) => r
+                .into_json()
+                .map_err(|e| EngineError::Query(format!("Snowflake response not JSON: {}", e)))?,
+            Err(ureq::Error::Status(code, r)) => {
+                let body = r.into_string().unwrap_or_default();
+                return Err(EngineError::Query(format!(
+                    "Snowflake HTTP {} from {}: {}",
+                    code,
+                    url,
+                    body.chars().take(300).collect::<String>()
+                )));
+            }
+            Err(e) => {
+                return Err(EngineError::Query(format!(
+                    "Snowflake HTTP transport to {}: {}",
+                    url, e
+                )));
+            }
+        };
+        let cols = response
+            .pointer("/resultSetMetaData/rowType")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                EngineError::Query("Snowflake response missing resultSetMetaData.rowType".into())
+            })?
+            .iter()
+            .filter_map(|c| c.get("name").and_then(|n| n.as_str()).map(String::from))
+            .collect::<Vec<_>>();
+        let data = response
+            .get("data")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        materialize_arrayrows_as_table(db, &spec.node_id, &cols, &data)?;
+        Ok(format!(
+            "snowflake: materialized {} rows into {}",
+            data.len(),
+            spec.node_id
+        ))
+    }
+
+    /// Databricks SQL source. Same shape as Snowflake; different JSON
+    /// paths for columns + data, and the manifest can carry
+    /// `total_chunk_count > 1` for paged results that we don't yet
+    /// follow (LIMIT or follow-up commit handles pagination).
+    fn run_databricks_source(
+        &self,
+        db: &Path,
+        spec: &DatabricksSourceSpec,
+    ) -> Result<String, EngineError> {
+        let url = spec.endpoint.clone().unwrap_or_else(|| {
+            format!("https://{}/api/2.0/sql/statements/", spec.workspace)
+        });
+        let mut body_obj = serde_json::Map::new();
+        body_obj.insert("statement".into(), JsonValue::String(spec.query.clone()));
+        body_obj.insert(
+            "warehouse_id".into(),
+            JsonValue::String(spec.warehouse_id.clone()),
+        );
+        if let Some(c) = &spec.catalog {
+            body_obj.insert("catalog".into(), JsonValue::String(c.clone()));
+        }
+        if let Some(s) = &spec.schema {
+            body_obj.insert("schema".into(), JsonValue::String(s.clone()));
+        }
+        body_obj.insert(
+            "wait_timeout".into(),
+            JsonValue::String(format!("{}s", spec.wait_timeout_seconds)),
+        );
+        body_obj.insert(
+            "on_wait_timeout".into(),
+            JsonValue::String("CONTINUE".into()),
+        );
+        let body = serde_json::to_string(&JsonValue::Object(body_obj))
+            .unwrap_or_else(|_| "{}".into());
+        let response: JsonValue = match ureq::post(&url)
+            .set("Authorization", &format!("Bearer {}", spec.pat))
+            .set("Content-Type", "application/json")
+            .set("Accept", "application/json")
+            .send_string(&body)
+        {
+            Ok(r) => r
+                .into_json()
+                .map_err(|e| EngineError::Query(format!("Databricks response not JSON: {}", e)))?,
+            Err(ureq::Error::Status(code, r)) => {
+                let body = r.into_string().unwrap_or_default();
+                return Err(EngineError::Query(format!(
+                    "Databricks HTTP {} from {}: {}",
+                    code,
+                    url,
+                    body.chars().take(300).collect::<String>()
+                )));
+            }
+            Err(e) => {
+                return Err(EngineError::Query(format!(
+                    "Databricks HTTP transport to {}: {}",
+                    url, e
+                )));
+            }
+        };
+        let cols = response
+            .pointer("/manifest/schema/columns")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| {
+                EngineError::Query(
+                    "Databricks response missing manifest.schema.columns".into(),
+                )
+            })?
+            .iter()
+            .filter_map(|c| c.get("name").and_then(|n| n.as_str()).map(String::from))
+            .collect::<Vec<_>>();
+        let data = response
+            .pointer("/result/data_array")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        materialize_arrayrows_as_table(db, &spec.node_id, &cols, &data)?;
+        Ok(format!(
+            "databricks: materialized {} rows into {}",
+            data.len(),
+            spec.node_id
+        ))
+    }
+
     /// Databricks SQL sink. Same multi-row INSERT batching as Snowflake;
     /// difference is the URL shape, the body field names (warehouse_id,
     /// catalog/schema, wait_timeout, on_wait_timeout), and identifier
@@ -1012,6 +1188,70 @@ fn now_nanos() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0)
+}
+
+/// Shared helper for src.snowflake / src.databricks: take an
+/// array-of-arrays response + column names, emit a JSON array of
+/// row objects to a temp file, and CREATE OR REPLACE TABLE node_id
+/// FROM read_json_auto('temp.json', format='array'). DuckDB infers
+/// the types from the JSON content - good enough for downstream
+/// stages to read the result like any other source.
+fn materialize_arrayrows_as_table(
+    db: &Path,
+    node_id: &str,
+    cols: &[String],
+    rows: &[JsonValue],
+) -> Result<(), EngineError> {
+    let tmp_dir = std::env::temp_dir();
+    let tmp_path = tmp_dir.join(format!("duckle-rest-{}-{}.json", node_id, std::process::id()));
+    let mut serialized = Vec::with_capacity(rows.len());
+    for row in rows {
+        let arr = row.as_array();
+        let mut obj = serde_json::Map::new();
+        for (i, name) in cols.iter().enumerate() {
+            let v = arr
+                .and_then(|a| a.get(i))
+                .cloned()
+                .unwrap_or(JsonValue::Null);
+            obj.insert(name.clone(), v);
+        }
+        serialized.push(JsonValue::Object(obj));
+    }
+    let json_text = serde_json::to_string(&JsonValue::Array(serialized))
+        .map_err(|e| EngineError::Query(format!("rest source: JSON encode: {}", e)))?;
+    std::fs::write(&tmp_path, json_text).map_err(|e| {
+        EngineError::Query(format!("rest source: write tmp file: {}", e))
+    })?;
+    let sql = format!(
+        "CREATE OR REPLACE TABLE {} AS SELECT * FROM read_json_auto('{}', format='array')",
+        plan::quote_ident(node_id),
+        tmp_path.display().to_string().replace('\\', "/").replace('\'', "''")
+    );
+    rest_source_apply(db, &sql)
+}
+
+/// Run a single SQL statement against `db` using the CLI helper used
+/// elsewhere. Tiny shim used by materialize_arrayrows_as_table to
+/// avoid plumbing &self through the free helper.
+fn rest_source_apply(db: &Path, sql: &str) -> Result<(), EngineError> {
+    use std::process::Command;
+    let binary = std::env::var("DUCKLE_DUCKDB_BIN").map_err(|_| {
+        EngineError::Config("DUCKLE_DUCKDB_BIN not set (engine couldn't run rest source materialize)".into())
+    })?;
+    let output = Command::new(&binary)
+        .arg(db.to_string_lossy().to_string())
+        .arg("-c")
+        .arg(sql)
+        .output()
+        .map_err(|e| EngineError::Query(format!("duckdb CLI for rest source: {}", e)))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Err(EngineError::Query(format!(
+            "rest source materialize failed: {}",
+            stderr.chars().take(500).collect::<String>()
+        )));
+    }
+    Ok(())
 }
 
 /// Snowflake identifier quoting: double quotes, internal quotes
