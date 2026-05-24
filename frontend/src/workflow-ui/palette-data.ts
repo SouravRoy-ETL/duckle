@@ -178,7 +178,7 @@ export const PALETTE: Category[] = [
                 id: 'src.nosql',
                 label: 'NoSQL & Search',
                 components: [
-                    src('mongodb', 'MongoDB', 'planned'),
+                    src('mongodb', 'MongoDB', 'available', 'Read documents from a MongoDB collection via the official Rust driver (find with optional filter / projection / limit). Auth via mongodb:// connection string.'),
                     src('cassandra', 'Cassandra', 'planned'),
                     src('scylla', 'ScyllaDB', 'planned'),
                     src('redis', 'Redis', 'planned'),
@@ -527,7 +527,7 @@ export const PALETTE: Category[] = [
                 id: 'snk.nosql',
                 label: 'NoSQL & Search',
                 components: [
-                    snk('mongodb', 'MongoDB', 'planned'),
+                    snk('mongodb', 'MongoDB', 'available', 'Insert documents into a MongoDB collection via the official driver. Bulk insert_many batched at 1000 docs by default; replace mode drops the collection first.'),
                     snk('redis', 'Redis', 'planned'),
                     snk('elastic', 'Elasticsearch', 'available', 'Bulk-index docs via the _bulk NDJSON API (configurable host, index, ApiKey auth)'),
                     snk('opensearch', 'OpenSearch', 'available', 'Bulk-index docs via the OpenSearch _bulk NDJSON API (same shape as Elasticsearch)'),

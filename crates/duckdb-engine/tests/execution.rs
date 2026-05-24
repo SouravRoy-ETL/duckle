@@ -2444,6 +2444,57 @@ fn text_reverse_repeat_and_compare() {
 }
 
 #[test]
+fn snk_and_src_mongodb_roundtrip_via_real_uri() {
+    // Env-gated like the postgres / mysql / minio tests. Set
+    // DUCKLE_MONGO_URI to a working mongodb URI (e.g. mongodb://127.0.0.1:27017)
+    // to run; otherwise skip cleanly. Insert 3 docs via snk.mongodb,
+    // read them back via src.mongodb, assert the count.
+    let engine = engine_or_skip!();
+    let uri = match std::env::var("DUCKLE_MONGO_URI").ok() {
+        Some(u) if !u.is_empty() => u,
+        _ => {
+            eprintln!("skipping: set DUCKLE_MONGO_URI to run MongoDB tests");
+            return;
+        }
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,alice\n2,bob\n3,carol\n");
+    let coll = format!("duckle_test_{}", std::process::id());
+
+    // Sink: replace mode so re-runs are idempotent.
+    let r1 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("m", "snk.mongodb", json!({
+                "uri": &uri,
+                "database": "duckle_test",
+                "collection": &coll,
+                "mode": "replace"
+            })),
+        ]),
+        json!([main_edge("e", "s", "m")]),
+    ));
+    assert_eq!(r1.status, "ok", "mongo sink failed: {:?}", r1.error);
+
+    // Source: read all 3 back.
+    let out = out_path(tmp.path(), "out.csv");
+    let r2 = engine.execute_pipeline(&doc(
+        json!([
+            node("m", "src.mongodb", json!({
+                "uri": &uri,
+                "database": "duckle_test",
+                "collection": &coll
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e", "m", "k")]),
+    ));
+    assert_eq!(r2.status, "ok", "mongo source failed: {:?}", r2.error);
+    let n = count(&format!("read_csv_auto('{}')", out));
+    assert_eq!(n, 3, "expected 3 docs round-tripped, got {}", n);
+}
+
+#[test]
 fn src_elastic_paginates_via_from_size() {
     // Two pages of size=2 each. The first returns hits = [a, b],
     // the second returns [c] (last page = fewer than size = stop).

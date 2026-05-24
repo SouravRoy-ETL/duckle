@@ -28,6 +28,13 @@ jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"]
 rsa = { version = "0.9", features = ["pem", "sha2"] }
 sha2 = "0.10"
 base64 = "0.22"
+# MongoDB. The official driver is async-only; we use a minimal tokio
+# rt feature and call .block_on() from the synchronous executor.
+# Significant dep cost (~5MB, 30s of compile time) but the only path
+# to genuine self-hosted Mongo support short of hand-writing the
+# BSON wire protocol.
+mongodb = { version = "3" }
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "net", "time"] }
 
 [dev-dependencies]
 tempfile = "3.10"

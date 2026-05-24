@@ -1492,6 +1492,39 @@ function synthApiSink(comp: ComponentDef): ComponentManifest {
 }
 
 function synthNoSqlSource(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'src.mongodb') {
+        return base(comp, [
+            {
+                label: 'MongoDB connection',
+                fields: [
+                    { key: 'uri', label: 'Connection URI', kind: 'text', required: true, placeholder: 'mongodb://user:pass@host:27017' },
+                    { key: 'database', label: 'Database', kind: 'text', required: true },
+                    { key: 'collection', label: 'Collection', kind: 'text', required: true },
+                ],
+            },
+            {
+                label: 'Query',
+                fields: [
+                    {
+                        key: 'filter',
+                        label: 'Filter (JSON / extended JSON)',
+                        kind: 'textarea',
+                        rows: 4,
+                        placeholder: '{"status": "active"}',
+                        description: 'BSON document expressed as JSON. Empty = match all.',
+                    },
+                    {
+                        key: 'projection',
+                        label: 'Projection (JSON)',
+                        kind: 'textarea',
+                        rows: 2,
+                        placeholder: '{"name": 1, "_id": 0}',
+                    },
+                    { key: 'limit', label: 'Limit (optional)', kind: 'integer' },
+                ],
+            },
+        ]);
+    }
     if (comp.id === 'src.elastic' || comp.id === 'src.opensearch') {
         const vendor = comp.id === 'src.elastic' ? 'Elasticsearch' : 'OpenSearch';
         return base(comp, [
@@ -1553,6 +1586,40 @@ function synthNoSqlSource(comp: ComponentDef): ComponentManifest {
 }
 
 function synthNoSqlSink(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'snk.mongodb') {
+        return base(comp, [
+            {
+                label: 'MongoDB connection',
+                fields: [
+                    { key: 'uri', label: 'Connection URI', kind: 'text', required: true, placeholder: 'mongodb://user:pass@host:27017' },
+                    { key: 'database', label: 'Database', kind: 'text', required: true },
+                    { key: 'collection', label: 'Collection', kind: 'text', required: true },
+                ],
+            },
+            {
+                label: 'Write',
+                fields: [
+                    {
+                        key: 'mode',
+                        label: 'Write mode',
+                        kind: 'select',
+                        defaultValue: 'insert',
+                        options: [
+                            { label: 'Insert (insert_many)', value: 'insert' },
+                            { label: 'Replace collection (drop + insert)', value: 'replace' },
+                        ],
+                    },
+                    {
+                        key: 'batchSize',
+                        label: 'Batch size',
+                        kind: 'integer',
+                        defaultValue: 1000,
+                        description: 'Docs per insert_many call.',
+                    },
+                ],
+            },
+        ], 'upstream');
+    }
     if (comp.id === 'snk.elastic' || comp.id === 'snk.opensearch') {
         const vendor = comp.id === 'snk.elastic' ? 'Elasticsearch' : 'OpenSearch';
         return base(

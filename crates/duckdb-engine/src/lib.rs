@@ -28,8 +28,8 @@ pub mod plan;
 pub use history::{append_run_record, load_run_history, RunRecord};
 pub use plan::{CompiledPipeline, PipelineDoc, Stage, StageKind};
 use plan::{
-    DatabricksSinkSpec, DatabricksSourceSpec, ElasticSourceSpec, RestSourceSpec, SnowflakeAuth,
-    SnowflakeSinkSpec, SnowflakeSourceSpec, WebhookSpec,
+    DatabricksSinkSpec, DatabricksSourceSpec, ElasticSourceSpec, MongoSinkSpec, MongoSourceSpec,
+    RestSourceSpec, SnowflakeAuth, SnowflakeSinkSpec, SnowflakeSourceSpec, WebhookSpec,
 };
 
 #[derive(Debug, Error)]
@@ -364,6 +364,12 @@ impl DuckdbEngine {
                     // Elasticsearch / OpenSearch _search source with
                     // from+size pagination.
                     self.run_elastic_source(&db_path, spec)
+                } else if let Some(spec) = stage.mongo_sink.as_ref() {
+                    // MongoDB insert_many via official async driver +
+                    // a tokio block_on per stage.
+                    self.run_mongo_sink(&db_path, spec)
+                } else if let Some(spec) = stage.mongo_source.as_ref() {
+                    self.run_mongo_source(&db_path, spec)
                 } else if let Some(spec) = stage.upsert.as_ref() {
                     // Relational-DB upsert: DESCRIBE the upstream first to
                     // get the column list, then assemble INSERT ... ON
@@ -787,6 +793,123 @@ impl DuckdbEngine {
         Ok(format!(
             "snowflake: inserted {} rows into {}",
             total_inserted, spec.table
+        ))
+    }
+
+    /// MongoDB sink: insert_many into the collection in batches. The
+    /// async mongodb driver is wrapped in a per-stage tokio runtime
+    /// (block_on) so it fits the synchronous executor model the rest
+    /// of the engine uses.
+    fn run_mongo_sink(
+        &self,
+        db: &Path,
+        spec: &MongoSinkSpec,
+    ) -> Result<String, EngineError> {
+        let select = format!("SELECT * FROM {}", plan::quote_ident(&spec.from_view));
+        let rows = self.run_rows(Some(db), &select)?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| EngineError::Query(format!("mongo: tokio runtime: {}", e)))?;
+        let result: Result<String, String> = rt.block_on(async {
+            let client = mongodb::Client::with_uri_str(&spec.uri)
+                .await
+                .map_err(|e| format!("connect: {}", e))?;
+            let collection = client
+                .database(&spec.database)
+                .collection::<mongodb::bson::Document>(&spec.collection);
+            if spec.mode == "replace" {
+                if let Err(e) = collection.drop().await {
+                    // Dropping a missing collection is not an error
+                    // we should surface; log + continue.
+                    eprintln!("mongo: drop before replace failed: {}", e);
+                }
+            }
+            let mut total = 0_usize;
+            for chunk in rows.chunks(spec.batch_size) {
+                let docs: Vec<mongodb::bson::Document> = chunk
+                    .iter()
+                    .filter_map(|v| mongodb::bson::to_document(v).ok())
+                    .collect();
+                if docs.is_empty() {
+                    continue;
+                }
+                let inserted = docs.len();
+                collection
+                    .insert_many(docs)
+                    .await
+                    .map_err(|e| format!("insert_many: {}", e))?;
+                total += inserted;
+            }
+            Ok(format!(
+                "mongodb: inserted {} docs into {}.{}",
+                total, spec.database, spec.collection
+            ))
+        });
+        result.map_err(|e| EngineError::Query(format!("mongodb sink: {}", e)))
+    }
+
+    /// MongoDB source: find() with optional filter + projection +
+    /// limit. The cursor is drained eagerly and the resulting BSON
+    /// documents are converted to JsonValue for materialization.
+    fn run_mongo_source(
+        &self,
+        db: &Path,
+        spec: &MongoSourceSpec,
+    ) -> Result<String, EngineError> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| EngineError::Query(format!("mongo: tokio runtime: {}", e)))?;
+        let docs: Result<Vec<mongodb::bson::Document>, String> = rt.block_on(async {
+            let client = mongodb::Client::with_uri_str(&spec.uri)
+                .await
+                .map_err(|e| format!("connect: {}", e))?;
+            let collection = client
+                .database(&spec.database)
+                .collection::<mongodb::bson::Document>(&spec.collection);
+            let filter: mongodb::bson::Document = match &spec.filter {
+                Some(f) => {
+                    let v: serde_json::Value = serde_json::from_str(f)
+                        .map_err(|e| format!("bad filter JSON: {}", e))?;
+                    mongodb::bson::to_document(&v).map_err(|e| format!("filter to bson: {}", e))?
+                }
+                None => mongodb::bson::Document::new(),
+            };
+            let mut find = collection.find(filter);
+            if let Some(limit) = spec.limit {
+                find = find.limit(limit);
+            }
+            if let Some(p) = &spec.projection {
+                let pv: serde_json::Value = serde_json::from_str(p)
+                    .map_err(|e| format!("bad projection JSON: {}", e))?;
+                let pdoc = mongodb::bson::to_document(&pv)
+                    .map_err(|e| format!("projection to bson: {}", e))?;
+                find = find.projection(pdoc);
+            }
+            let mut cursor = find.await.map_err(|e| format!("find: {}", e))?;
+            let mut out = Vec::new();
+            while cursor.advance().await.map_err(|e| format!("cursor: {}", e))? {
+                let d = cursor
+                    .deserialize_current()
+                    .map_err(|e| format!("deserialize: {}", e))?;
+                out.push(d);
+            }
+            Ok(out)
+        });
+        let docs = docs.map_err(|e| EngineError::Query(format!("mongodb source: {}", e)))?;
+        // BSON Document -> JsonValue. Some BSON types (ObjectId, Date)
+        // serialize as objects with {$oid: ...} / {$date: ...} - good
+        // enough for downstream DuckDB to ingest as strings/json.
+        let json_docs: Vec<JsonValue> = docs
+            .iter()
+            .filter_map(|d| serde_json::to_value(d).ok())
+            .collect();
+        let count = json_docs.len();
+        materialize_jsonobjects_as_table(db, &spec.node_id, &json_docs)?;
+        Ok(format!(
+            "mongodb: materialized {} docs into {}",
+            count, spec.node_id
         ))
     }
 

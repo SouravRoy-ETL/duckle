@@ -72,6 +72,10 @@ pub struct Stage {
     /// Elasticsearch / OpenSearch _search source. Paginated via
     /// from+size; rows come from hits.hits[]._source.
     pub elastic_source: Option<ElasticSourceSpec>,
+    /// MongoDB insert_many sink (official driver + tokio block_on).
+    pub mongo_sink: Option<MongoSinkSpec>,
+    /// MongoDB find() source (official driver + tokio block_on).
+    pub mongo_source: Option<MongoSourceSpec>,
     /// Milliseconds the executor sleeps before running this stage.
     /// Set by ctl.wait and ctl.throttle. None = no delay.
     pub wait_ms: Option<u64>,
@@ -147,6 +151,39 @@ pub struct SnowflakeSourceSpec {
     pub warehouse: Option<String>,
     pub role: Option<String>,
     pub query: String,
+}
+
+/// snk.mongodb: bulk-insert documents into a MongoDB collection via
+/// the official Rust driver. Async-under-the-hood; the executor runs
+/// it on a small tokio runtime via block_on.
+#[derive(Debug, Clone)]
+pub struct MongoSinkSpec {
+    pub from_view: String,
+    /// Standard mongodb:// URI (with credentials inline).
+    pub uri: String,
+    pub database: String,
+    pub collection: String,
+    /// 'insert' = insert_many; 'replace' = drop the collection first
+    /// then insert; 'upsert' is a follow-up commit (needs key column).
+    pub mode: String,
+    pub batch_size: usize,
+}
+
+/// src.mongodb: find() against a MongoDB collection with an optional
+/// filter (JSON-encoded). Cursor is drained eagerly and materialized
+/// as a DuckDB table via read_json_auto.
+#[derive(Debug, Clone)]
+pub struct MongoSourceSpec {
+    pub node_id: String,
+    pub uri: String,
+    pub database: String,
+    pub collection: String,
+    /// Optional filter as JSON; empty / None = match-all.
+    pub filter: Option<String>,
+    /// Optional projection as JSON.
+    pub projection: Option<String>,
+    /// Hard cap on the cursor result count. None = unbounded.
+    pub limit: Option<i64>,
 }
 
 /// src.elastic / src.opensearch: read from Elasticsearch-compatible
@@ -576,6 +613,8 @@ fn build_stage(
     let mut databricks_source: Option<DatabricksSourceSpec> = None;
     let mut rest_source: Option<RestSourceSpec> = None;
     let mut elastic_source: Option<ElasticSourceSpec> = None;
+    let mut mongo_sink: Option<MongoSinkSpec> = None;
+    let mut mongo_source: Option<MongoSourceSpec> = None;
     let mut wait_ms: Option<u64> = None;
     // Advanced settings (universal across components, written by the
     // Properties Panel's Advanced tab). Engine honours them per stage.
@@ -802,6 +841,31 @@ fn build_stage(
                 .and_then(|v| v.as_u64())
                 .filter(|n| *n > 0 && *n <= 50) // Databricks max is 50s
                 .unwrap_or(30),
+        });
+        (String::new(), StageKind::Sink, Some(from_view.to_string()))
+    } else if component_id == "snk.mongodb" {
+        let from_view = inputs.main().ok_or_else(|| missing_input(node, "main"))?;
+        let uri = string_prop(&props, "uri")
+            .or_else(|| string_prop(&props, "connectionString"))
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: uri required (mongodb://...)", component_id)))?;
+        let database = string_prop(&props, "database")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: database required", component_id)))?;
+        let collection = string_prop(&props, "collection")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: collection required", component_id)))?;
+        mongo_sink = Some(MongoSinkSpec {
+            from_view: from_view.to_string(),
+            uri,
+            database,
+            collection,
+            mode: string_prop(&props, "mode").unwrap_or_else(|| "insert".into()),
+            batch_size: props
+                .get("batchSize")
+                .and_then(|v| v.as_u64())
+                .filter(|n| *n > 0)
+                .unwrap_or(1000) as usize,
         });
         (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if component_id == "snk.snowflake" {
@@ -1065,6 +1129,27 @@ fn build_stage(
                 .unwrap_or(100),
         });
         (String::new(), StageKind::View, None)
+    } else if component_id == "src.mongodb" {
+        let uri = string_prop(&props, "uri")
+            .or_else(|| string_prop(&props, "connectionString"))
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: uri required", component_id)))?;
+        let database = string_prop(&props, "database")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: database required", component_id)))?;
+        let collection = string_prop(&props, "collection")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: collection required", component_id)))?;
+        mongo_source = Some(MongoSourceSpec {
+            node_id: node.id.clone(),
+            uri,
+            database,
+            collection,
+            filter: string_prop(&props, "filter").filter(|s| !s.trim().is_empty()),
+            projection: string_prop(&props, "projection").filter(|s| !s.trim().is_empty()),
+            limit: props.get("limit").and_then(|v| v.as_i64()).filter(|n| *n > 0),
+        });
+        (String::new(), StageKind::View, None)
     } else if component_id == "src.rest" {
         // Generic REST source. URL is required; everything else is
         // optional. Form's authType maps to a header (same as snk.rest).
@@ -1269,6 +1354,8 @@ fn build_stage(
         databricks_source,
         rest_source,
         elastic_source,
+        mongo_sink,
+        mongo_source,
         wait_ms,
         retry_attempts,
         retry_backoff_ms,
