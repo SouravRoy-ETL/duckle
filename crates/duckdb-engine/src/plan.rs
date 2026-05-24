@@ -78,9 +78,10 @@ pub struct TextSearchSpec {
     pub staging_table: String,
 }
 
-/// snk.webhook / snk.rest: HTTP POST/PUT one request per upstream row,
-/// using the row's JSON as the request body. Tauri-side reqwest would
-/// also work but ureq keeps the per-stage CLI shape we already use.
+/// snk.webhook / snk.rest / vendor HTTP sinks: one HTTP POST/PUT
+/// per row, or a single batched request whose body is the entire
+/// result as a JSON array. ureq keeps the per-stage CLI shape we
+/// already use; no tokio required.
 #[derive(Debug, Clone)]
 pub struct WebhookSpec {
     pub from_view: String,
@@ -90,6 +91,11 @@ pub struct WebhookSpec {
     /// Body shape: 'row' (one POST per row, body = row JSON) or 'batch'
     /// (single POST, body = entire result as JSON array).
     pub body_shape: String,
+    /// Optional batch-mode wrap: when set, the array body is wrapped
+    /// in {body_wrap: [...]} so vendors like Pinecone (wrap='vectors')
+    /// or Qdrant (wrap='points') get the shape they expect without
+    /// the user having to hand-build the JSON.
+    pub body_wrap: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -451,12 +457,69 @@ fn build_stage(
                 _ => {}
             }
         }
+        let body_wrap = string_prop(&props, "bodyWrap").filter(|s| !s.is_empty());
         webhook = Some(WebhookSpec {
             from_view: from_view.to_string(),
             url,
             method,
             headers,
             body_shape,
+            body_wrap,
+        });
+        (String::new(), StageKind::Sink, Some(from_view.to_string()))
+    } else if component_id == "snk.pinecone" {
+        // Pinecone vector upsert. Form fields: indexHost (e.g.
+        // 'idx-abc123.svc.us-east1-gcp.pinecone.io'), apiKey, vectorColumn,
+        // idColumn. The engine builds the {vectors: [...]} body that the
+        // /vectors/upsert endpoint expects and sets the Api-Key header.
+        let from_view = inputs.main().ok_or_else(|| missing_input(node, "main"))?;
+        let host = string_prop(&props, "indexHost")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: indexHost required (e.g. 'idx-abc123.svc.us-east1-gcp.pinecone.io')", component_id)))?;
+        let api_key = string_prop(&props, "apiKey").unwrap_or_default();
+        let url = format!("https://{}/vectors/upsert", host.trim_start_matches("https://"));
+        let mut headers = headers_from_props(&props);
+        if !api_key.is_empty() {
+            headers.push(("Api-Key".into(), api_key));
+        }
+        webhook = Some(WebhookSpec {
+            from_view: from_view.to_string(),
+            url,
+            method: "POST".into(),
+            headers,
+            body_shape: "batch".into(),
+            body_wrap: Some("vectors".into()),
+        });
+        (String::new(), StageKind::Sink, Some(from_view.to_string()))
+    } else if component_id == "snk.qdrant" {
+        // Qdrant points upsert. Form fields: clusterUrl (e.g.
+        // 'https://xyz-east1.aws.cloud.qdrant.io:6333'), collection,
+        // apiKey. Body shape: {points: [...]}; upsert is PUT to
+        // /collections/{collection}/points.
+        let from_view = inputs.main().ok_or_else(|| missing_input(node, "main"))?;
+        let cluster = string_prop(&props, "clusterUrl")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: clusterUrl required", component_id)))?;
+        let collection = string_prop(&props, "collection")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: collection required", component_id)))?;
+        let api_key = string_prop(&props, "apiKey").unwrap_or_default();
+        let url = format!(
+            "{}/collections/{}/points",
+            cluster.trim_end_matches('/'),
+            collection
+        );
+        let mut headers = headers_from_props(&props);
+        if !api_key.is_empty() {
+            headers.push(("api-key".into(), api_key));
+        }
+        webhook = Some(WebhookSpec {
+            from_view: from_view.to_string(),
+            url,
+            method: "PUT".into(),
+            headers,
+            body_shape: "batch".into(),
+            body_wrap: Some("points".into()),
         });
         (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if component_id.starts_with("snk.") {

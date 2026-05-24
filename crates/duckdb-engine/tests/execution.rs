@@ -2343,6 +2343,81 @@ fn snk_webhook_posts_one_request_per_row() {
 }
 
 #[test]
+fn snk_pinecone_wraps_batch_in_vectors_key() {
+    // Pinecone wants {"vectors": [...]}; we should see that exact wrap
+    // in the single batched request the engine sends.
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let engine = engine_or_skip!();
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock http");
+    let port = listener.local_addr().unwrap().port();
+
+    let handle = std::thread::spawn(move || {
+        for stream in listener.incoming().take(1) {
+            let mut stream = match stream { Ok(s) => s, Err(_) => break };
+            stream.set_read_timeout(Some(Duration::from_millis(250))).ok();
+            stream.set_nodelay(true).ok();
+            let mut buf = Vec::with_capacity(8192);
+            let mut chunk = [0u8; 4096];
+            for _ in 0..16 {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            let _ = tx.send(buf);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    // Pinecone URL must end with /vectors/upsert; we point at our mock by
+    // pretending the host is localhost:<port> (URL becomes
+    // https://localhost:<port>/vectors/upsert which the engine builds
+    // verbatim from indexHost). For the test we need http not https, so
+    // we override the URL via the underlying snk.webhook component
+    // instead, while still asserting the wrapped body shape.
+    let tmp = tempfile::tempdir().unwrap();
+    // Note: we drive snk.webhook with bodyShape='batch' + bodyWrap='vectors'
+    // to verify the wrap; the snk.pinecone component sets these the same
+    // way internally + adds the Api-Key header. (snk.pinecone always
+    // builds an https URL; in CI we can't intercept that, so this test
+    // verifies the wrap logic which is the part that's vendor-specific.)
+    let csv = write_file(
+        tmp.path(),
+        "vec.csv",
+        "id,values\n1,\"[0.1, 0.2]\"\n2,\"[0.3, 0.4]\"\n",
+    );
+    let url = format!("http://127.0.0.1:{}/vectors/upsert", port);
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("p", "snk.webhook", json!({
+                "url": url,
+                "batchMode": "array",
+                "bodyWrap": "vectors"
+            })),
+        ]),
+        json!([main_edge("e1", "s", "p")]),
+    ));
+    assert_eq!(r.status, "ok", "pinecone-shape failed: {:?}", r.error);
+
+    let req = rx.recv_timeout(Duration::from_secs(5)).expect("expected 1 batched request");
+    let _ = handle.join();
+    let body = String::from_utf8_lossy(&req).to_string();
+    // The wrap key must appear in the body around the array.
+    assert!(body.contains("\"vectors\""), "expected wrapped body with 'vectors' key: {}", body);
+    assert!(body.contains("\"id\":1") || body.contains("\"id\": 1"), "expected id=1: {}", body);
+}
+
+#[test]
 fn snk_rest_batches_rows_into_one_request() {
     // Same shape as the webhook test but bodyShape='batch' /
     // batchMode='array' should produce ONE request containing both rows.

@@ -2686,6 +2686,64 @@ const distanceMetricField = (): Field => ({
 });
 
 function synthVectorSink(comp: ComponentDef): ComponentManifest {
+    if (comp.id === 'snk.pinecone') {
+        return base(comp, [
+            {
+                label: 'Pinecone index',
+                fields: [
+                    {
+                        key: 'indexHost',
+                        label: 'Index host',
+                        kind: 'text',
+                        required: true,
+                        placeholder: 'idx-abc123.svc.us-east1-gcp.pinecone.io',
+                        description: 'The host part of your index URL. Strip the leading https://.',
+                    },
+                    { key: 'apiKey', label: 'API key', kind: 'text', required: true, placeholder: '••••••••' },
+                ],
+            },
+            {
+                label: 'Body shape',
+                fields: [
+                    {
+                        key: 'shapeHint',
+                        label: 'Row shape',
+                        kind: 'text',
+                        description: 'Each upstream row should already have {id, values, metadata}. Use a Project / Add Column upstream to rename your embedding column to "values" and any extras into a "metadata" struct.',
+                    },
+                ],
+            },
+        ], 'upstream');
+    }
+    if (comp.id === 'snk.qdrant') {
+        return base(comp, [
+            {
+                label: 'Qdrant cluster',
+                fields: [
+                    {
+                        key: 'clusterUrl',
+                        label: 'Cluster URL',
+                        kind: 'text',
+                        required: true,
+                        placeholder: 'https://xyz-east1.aws.cloud.qdrant.io:6333',
+                    },
+                    { key: 'collection', label: 'Collection', kind: 'text', required: true, placeholder: 'documents' },
+                    { key: 'apiKey', label: 'API key', kind: 'text', placeholder: '••••••••' },
+                ],
+            },
+            {
+                label: 'Body shape',
+                fields: [
+                    {
+                        key: 'shapeHint',
+                        label: 'Row shape',
+                        kind: 'text',
+                        description: 'Each upstream row should already have {id, vector, payload}. Use Project / Add Column upstream to reshape if needed.',
+                    },
+                ],
+            },
+        ], 'upstream');
+    }
     if (comp.id === 'snk.pgvector') {
         return base(comp, [
             { label: 'Connection', fields: dbConnectionFields(comp.id) },

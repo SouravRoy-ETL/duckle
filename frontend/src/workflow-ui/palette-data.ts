@@ -532,8 +532,8 @@ export const PALETTE: Category[] = [
                 label: 'Vector / AI Databases',
                 components: [
                     snk('pgvector', 'pgvector (Postgres)', 'available', 'Write embeddings to a Postgres table (server must have CREATE EXTENSION vector)'),
-                    snk('pinecone', 'Pinecone', 'preview', 'Upsert vectors + metadata'),
-                    snk('qdrant', 'Qdrant', 'preview'),
+                    snk('pinecone', 'Pinecone', 'available', 'Upsert vectors to a Pinecone index via /vectors/upsert with Api-Key auth'),
+                    snk('qdrant', 'Qdrant', 'available', 'Upsert points to a Qdrant collection via PUT /collections/{name}/points'),
                     snk('weaviate', 'Weaviate', 'preview'),
                     snk('chroma', 'Chroma', 'preview'),
                     snk('milvus', 'Milvus', 'preview'),

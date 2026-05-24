@@ -591,7 +591,15 @@ impl DuckdbEngine {
         };
         match spec.body_shape.as_str() {
             "batch" => {
-                let body = serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into());
+                let body = match spec.body_wrap.as_deref() {
+                    Some(wrap_key) => {
+                        // Wrap the array in {wrap_key: [...]} for vendors
+                        // like Pinecone ('vectors') or Qdrant ('points').
+                        let wrapped = serde_json::json!({ wrap_key: rows });
+                        serde_json::to_string(&wrapped).unwrap_or_else(|_| "{}".into())
+                    }
+                    None => serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into()),
+                };
                 dispatch(body)?;
                 Ok(format!("sent 1 batch ({} rows) to {}", rows.len(), spec.url))
             }
