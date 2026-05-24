@@ -128,6 +128,13 @@ pub struct Stage {
     pub weaviate_source: Option<WeaviateSourceSpec>,
     /// Milvus vector query source (paginates /v1/vector/query via offset).
     pub milvus_source: Option<MilvusSourceSpec>,
+    /// YAML / TOML config-format reader: parse the file with the relevant
+    /// serde crate, then materialize the rows via the shared json-table
+    /// helper. One spec, two formats picked by the FormatKind field.
+    pub format_source: Option<FormatFileSourceSpec>,
+    /// YAML / TOML config-format writer: SELECT the upstream view, serialize
+    /// the row array with the relevant serde crate, write to disk.
+    pub format_sink: Option<FormatFileSinkSpec>,
     /// Milliseconds the executor sleeps before running this stage.
     /// Set by ctl.wait and ctl.throttle. None = no delay.
     pub wait_ms: Option<u64>,
@@ -302,6 +309,36 @@ pub struct MilvusSourceSpec {
     pub output_fields: Vec<String>,
     pub page_size: u64,
     pub max_pages: u64,
+}
+
+/// Which config-data format a FormatFileSource/Sink uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatKind {
+    Yaml,
+    Toml,
+}
+
+/// src.yaml / src.toml: parse a single file with the relevant serde
+/// crate. If the document is an array, each element becomes a row;
+/// otherwise the whole document is one row. Suits config-data /
+/// IaC-style imports where each YAML/TOML doc is small.
+#[derive(Debug, Clone)]
+pub struct FormatFileSourceSpec {
+    pub node_id: String,
+    pub path: String,
+    pub format: FormatKind,
+}
+
+/// snk.yaml / snk.toml: serialize the upstream's rows as a single
+/// document. Default shape is a top-level array of objects; for TOML
+/// this means each row becomes a [[row]] table entry under a `rows`
+/// key (TOML's top-level grammar disallows a bare array). YAML is
+/// emitted as a clean `- key: value` array.
+#[derive(Debug, Clone)]
+pub struct FormatFileSinkSpec {
+    pub from_view: String,
+    pub path: String,
+    pub format: FormatKind,
 }
 
 /// snk.cassandra / snk.scylla: CQL INSERT via the scylla driver
@@ -895,6 +932,8 @@ fn build_stage(
     let mut qdrant_source: Option<QdrantSourceSpec> = None;
     let mut weaviate_source: Option<WeaviateSourceSpec> = None;
     let mut milvus_source: Option<MilvusSourceSpec> = None;
+    let mut format_source: Option<FormatFileSourceSpec> = None;
+    let mut format_sink: Option<FormatFileSinkSpec> = None;
     let mut wait_ms: Option<u64> = None;
     // Advanced settings (universal across components, written by the
     // Properties Panel's Advanced tab). Engine honours them per stage.
@@ -1713,6 +1752,44 @@ fn build_stage(
             query,
         });
         (String::new(), StageKind::View, None)
+    } else if matches!(component_id, "src.yaml" | "src.toml") {
+        // Single-file YAML / TOML reader. path is the absolute file
+        // path; engine parses the doc with the relevant serde crate
+        // and materializes the row array via the shared json-table
+        // helper. If the doc is a top-level array, each element is
+        // a row; otherwise the whole doc becomes one row.
+        let path = string_prop(&props, "path")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: path required", component_id)))?;
+        format_source = Some(FormatFileSourceSpec {
+            node_id: node.id.clone(),
+            path,
+            format: if component_id == "src.yaml" {
+                FormatKind::Yaml
+            } else {
+                FormatKind::Toml
+            },
+        });
+        (String::new(), StageKind::View, None)
+    } else if matches!(component_id, "snk.yaml" | "snk.toml") {
+        // Single-file YAML / TOML writer. SELECT the upstream view's
+        // rows, serialize as a single doc. YAML emits a top-level
+        // array; TOML wraps in a `rows` key (TOML disallows a bare
+        // top-level array).
+        let from_view = inputs.main().ok_or_else(|| missing_input(node, "main"))?;
+        let path = string_prop(&props, "path")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: path required", component_id)))?;
+        format_sink = Some(FormatFileSinkSpec {
+            from_view: from_view.to_string(),
+            path,
+            format: if component_id == "snk.yaml" {
+                FormatKind::Yaml
+            } else {
+                FormatKind::Toml
+            },
+        });
+        (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if component_id == "src.qdrant" {
         // Qdrant points scroll source. clusterUrl + collection +
         // optional apiKey. with_vector defaults false (vectors are
@@ -2222,6 +2299,8 @@ fn build_stage(
         qdrant_source,
         weaviate_source,
         milvus_source,
+        format_source,
+        format_sink,
         wait_ms,
         retry_attempts,
         retry_backoff_ms,

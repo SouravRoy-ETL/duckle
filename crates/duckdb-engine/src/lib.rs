@@ -29,10 +29,11 @@ pub use history::{append_run_record, load_run_history, RunRecord};
 pub use plan::{CompiledPipeline, PipelineDoc, Stage, StageKind};
 use plan::{
     CassandraSinkSpec, CassandraSourceSpec, ClickHouseSinkSpec, ClickHouseSourceSpec,
-    DatabricksSinkSpec, DatabricksSourceSpec, ElasticSourceSpec, MilvusSourceSpec, MongoSinkSpec,
-    MongoSourceSpec, OracleSinkSpec, OracleSourceSpec, QdrantSourceSpec, RedisSinkSpec,
-    RedisSourceSpec, RestPagination, RestSourceSpec, SnowflakeAuth, SnowflakeSinkSpec,
-    SnowflakeSourceSpec, SqlServerSinkSpec, SqlServerSourceSpec, WeaviateSourceSpec, WebhookSpec,
+    DatabricksSinkSpec, DatabricksSourceSpec, ElasticSourceSpec, FormatFileSinkSpec,
+    FormatFileSourceSpec, FormatKind, MilvusSourceSpec, MongoSinkSpec, MongoSourceSpec,
+    OracleSinkSpec, OracleSourceSpec, QdrantSourceSpec, RedisSinkSpec, RedisSourceSpec,
+    RestPagination, RestSourceSpec, SnowflakeAuth, SnowflakeSinkSpec, SnowflakeSourceSpec,
+    SqlServerSinkSpec, SqlServerSourceSpec, WeaviateSourceSpec, WebhookSpec,
 };
 
 #[derive(Debug, Error)]
@@ -496,6 +497,10 @@ impl DuckdbEngine {
                     self.run_weaviate_source(&db_path, spec)
                 } else if let Some(spec) = stage.milvus_source.as_ref() {
                     self.run_milvus_source(&db_path, spec)
+                } else if let Some(spec) = stage.format_source.as_ref() {
+                    self.run_format_source(&db_path, spec)
+                } else if let Some(spec) = stage.format_sink.as_ref() {
+                    self.run_format_sink(&db_path, spec)
                 } else if let Some(spec) = stage.upsert.as_ref() {
                     // Relational-DB upsert: DESCRIBE the upstream first to
                     // get the column list, then assemble INSERT ... ON
@@ -1615,6 +1620,84 @@ impl DuckdbEngine {
         Ok(format!(
             "milvus: materialized {} points into {}",
             count, spec.node_id
+        ))
+    }
+
+    /// YAML / TOML config-format reader. Parses the whole file with
+    /// the relevant serde crate, normalizes the value into a Vec of
+    /// row objects (top-level array becomes one row per element;
+    /// anything else becomes a single row), and materializes via the
+    /// shared json-table helper. Aimed at config-data ETL (Helm
+    /// values, GitHub Actions matrices, Cargo deps audits), not at
+    /// streaming gigabyte logs.
+    fn run_format_source(
+        &self,
+        db: &Path,
+        spec: &FormatFileSourceSpec,
+    ) -> Result<String, EngineError> {
+        let raw = std::fs::read_to_string(&spec.path).map_err(|e| {
+            EngineError::Query(format!("{:?} source: read {}: {}", spec.format, spec.path, e))
+        })?;
+        let val: JsonValue = match spec.format {
+            FormatKind::Yaml => serde_yaml::from_str(&raw).map_err(|e| {
+                EngineError::Query(format!("yaml parse {}: {}", spec.path, e))
+            })?,
+            FormatKind::Toml => {
+                let t: toml::Value = toml::from_str(&raw).map_err(|e| {
+                    EngineError::Query(format!("toml parse {}: {}", spec.path, e))
+                })?;
+                serde_json::to_value(t).map_err(|e| {
+                    EngineError::Query(format!("toml -> json {}: {}", spec.path, e))
+                })?
+            }
+        };
+        let rows: Vec<JsonValue> = match val {
+            JsonValue::Array(a) => a,
+            other => vec![other],
+        };
+        let count = rows.len();
+        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        Ok(format!(
+            "{:?}: materialized {} rows into {}",
+            spec.format, count, spec.node_id
+        ))
+    }
+
+    /// YAML / TOML config-format writer. Pulls every row from the
+    /// upstream view, serializes the whole batch as a single doc.
+    /// YAML emits a top-level `- key: value` array. TOML wraps in a
+    /// `rows` key since TOML's top-level grammar disallows a bare
+    /// array (you can't write `[ { ... }, { ... } ]` at the root).
+    fn run_format_sink(
+        &self,
+        db: &Path,
+        spec: &FormatFileSinkSpec,
+    ) -> Result<String, EngineError> {
+        let select = format!("SELECT * FROM {}", plan::quote_ident(&spec.from_view));
+        let rows = self.run_rows(Some(db), &select)?;
+        let payload = JsonValue::Array(rows.clone());
+        let text = match spec.format {
+            FormatKind::Yaml => serde_yaml::to_string(&payload).map_err(|e| {
+                EngineError::Query(format!("yaml serialize: {}", e))
+            })?,
+            FormatKind::Toml => {
+                // TOML doesn't allow a top-level array; wrap.
+                let mut wrap = serde_json::Map::new();
+                wrap.insert("rows".into(), payload);
+                let t = serde_json::to_value(JsonValue::Object(wrap)).unwrap_or(JsonValue::Null);
+                toml::to_string(&t).map_err(|e| {
+                    EngineError::Query(format!("toml serialize: {}", e))
+                })?
+            }
+        };
+        std::fs::write(&spec.path, text).map_err(|e| {
+            EngineError::Query(format!("{:?} sink: write {}: {}", spec.format, spec.path, e))
+        })?;
+        Ok(format!(
+            "{:?}: wrote {} rows to {}",
+            spec.format,
+            rows.len(),
+            spec.path
         ))
     }
 

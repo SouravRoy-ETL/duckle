@@ -51,7 +51,7 @@ Duckle is in **early development**. The visual designer, the DuckDB execution en
 
 **Scope, stated plainly:** Duckle is a single-machine, embedded studio. If you outgrow one box, point Duckle's output at the system that scales. It will not pretend to be a cluster.
 
-The component palette ships **290+ nodes** so the roadmap is visible in the product itself. As of the latest engine cut: **220 available**, **15 preview**, **58 planned**. Each node is tagged by availability:
+The component palette ships **300 nodes** so the roadmap is visible in the product itself. As of the latest engine cut: **250 available**, **12 preview**, **38 planned**. Each node is tagged by availability:
 
 - **Available** runs on the DuckDB engine today.
 - **Preview** is configurable in the designer now (drag, wire, set properties); execution is being wired engine-by-engine. This currently covers the AI transforms and some vector DB read sources.
@@ -87,7 +87,7 @@ Duckle is not a CSV tool with extras. It reads a broad set of formats and source
 
 | Group | Connectors | Status |
 |---|---|---|
-| **Files** | CSV, TSV, Parquet, JSON, JSONL / NDJSON, Excel (.xlsx) | Available |
+| **Files** | CSV, TSV, Parquet, JSON, JSONL / NDJSON, Excel (.xlsx), **YAML**, **TOML** | Available |
 | **Geospatial files** | GeoJSON, Shapefile, GeoPackage, KML, GPX, GML via the `spatial` extension | Available (lazy-loaded) |
 | **Lakehouse table formats** | Apache Iceberg, Delta Lake, DuckLake | Available |
 | **Embedded databases** | SQLite (read tables), DuckDB (read tables or run a query) | Available |
@@ -163,7 +163,7 @@ The whole group runs today. Validators split their input: passing rows continue 
 
 | Group | Connectors | Status |
 |---|---|---|
-| **Files** | CSV, TSV, Parquet (ZSTD), JSON, JSONL / NDJSON, Excel (.xlsx) - Parquet and CSV support Hive-partitioned writes via `PARTITION_BY (col1, col2)` with `OVERWRITE_OR_IGNORE` semantics | Available |
+| **Files** | CSV, TSV, Parquet (ZSTD), JSON, JSONL / NDJSON, Excel (.xlsx), **YAML**, **TOML** - Parquet and CSV support Hive-partitioned writes via `PARTITION_BY (col1, col2)` with `OVERWRITE_OR_IGNORE` semantics | Available |
 | **Geospatial files** | GeoJSON, GeoPackage, Shapefile, KML, GPX via GDAL | Available (lazy-loaded) |
 | **Lakehouse table formats** | Apache Iceberg (full table layout), DuckLake | Available |
 | **Embedded databases** | SQLite, DuckDB (write a table) | Available |

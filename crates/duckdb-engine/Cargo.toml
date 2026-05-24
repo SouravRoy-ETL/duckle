@@ -55,6 +55,12 @@ oracle = { version = "0.6", optional = true }
 # Connection / Pipeline API to fit the per-stage CLI shell-out model.
 # Small dep (~300kb).
 redis = { version = "0.27", default-features = false }
+# YAML and TOML format readers/writers. Small pure-Rust deps. Used by
+# src.yaml / snk.yaml / src.toml / snk.toml - we parse to serde_json::Value
+# then either materialize as a DuckDB JSON table or write the JSON back
+# out as YAML/TOML. Avoids needing DuckDB extensions for either format.
+serde_yaml = "0.9"
+toml = "0.8"
 
 [features]
 default = ["oracle"]

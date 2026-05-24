@@ -5698,6 +5698,99 @@ fn snk_cockroach_routes_through_postgres_attach_path() {
 }
 
 #[test]
+fn src_yaml_reads_array_of_objects_as_rows() {
+    // Top-level YAML array becomes one row per element.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let yaml = "\
+- id: 1
+  name: alice
+  active: true
+- id: 2
+  name: bob
+  active: false
+- id: 3
+  name: carol
+  active: true
+";
+    let yaml_path = write_file(tmp.path(), "in.yaml", yaml);
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("y", "src.yaml", json!({ "path": yaml_path })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "y", "k")]),
+    ));
+    assert_eq!(r.status, "ok", "src.yaml failed: {:?}", r.error);
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 3);
+}
+
+#[test]
+fn yaml_roundtrip_via_snk_then_src() {
+    // CSV -> snk.yaml -> src.yaml -> CSV; preserve all 3 rows.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "in.csv",
+        "id,name\n1,alpha\n2,beta\n3,gamma\n",
+    );
+    let yaml_path = out_path(tmp.path(), "mid.yaml");
+    let out_csv = out_path(tmp.path(), "out.csv");
+
+    let r1 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("y", "snk.yaml", json!({ "path": yaml_path })),
+        ]),
+        json!([main_edge("e1", "s", "y")]),
+    ));
+    assert_eq!(r1.status, "ok", "snk.yaml failed: {:?}", r1.error);
+    assert!(std::path::Path::new(&yaml_path).exists(), "yaml file not written");
+
+    let r2 = engine.execute_pipeline(&doc(
+        json!([
+            node("y", "src.yaml", json!({ "path": yaml_path })),
+            node("k", "snk.csv", json!({ "path": out_csv, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "y", "k")]),
+    ));
+    assert_eq!(r2.status, "ok", "src.yaml roundtrip failed: {:?}", r2.error);
+    assert_eq!(count(&format!("read_csv_auto('{}')", out_csv)), 3);
+}
+
+#[test]
+fn toml_roundtrip_wraps_under_rows_key() {
+    // TOML disallows a top-level array, so snk.toml wraps as
+    // `[[rows]] id = 1 name = "alpha"`. src.toml reads that back -
+    // the result is a single row whose `rows` column is the list.
+    // We assert the file content shape, not a 3-row pass-through,
+    // because TOML's grammar makes a clean array roundtrip awkward.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,alpha\n2,beta\n");
+    let toml_path = out_path(tmp.path(), "out.toml");
+
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("t", "snk.toml", json!({ "path": toml_path })),
+        ]),
+        json!([main_edge("e1", "s", "t")]),
+    ));
+    assert_eq!(r.status, "ok", "snk.toml failed: {:?}", r.error);
+    let written = std::fs::read_to_string(&toml_path).unwrap();
+    assert!(
+        written.contains("[[rows]]"),
+        "expected TOML output wrapped in [[rows]]: {}",
+        written
+    );
+    assert!(written.contains("alpha"), "expected alpha row in TOML: {}", written);
+    assert!(written.contains("beta"), "expected beta row in TOML: {}", written);
+}
+
+#[test]
 fn src_qdrant_walks_scroll_pages_and_flattens_payload() {
     // Mock returns one page with 2 points and a non-null
     // next_page_offset, then a second page with 1 point and null

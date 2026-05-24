@@ -4,12 +4,12 @@ This document is the source of truth for what's in the palette but
 not yet executable. The README's capability tables are the highlight
 reel; this is the full ledger.
 
-The palette currently carries **298 components**, broken down:
+The palette currently carries **300 components**, broken down:
 
-- **246 available** - executes on the DuckDB engine today
+- **250 available** - executes on the DuckDB engine today
 - **12 preview** - configurable in the designer (drag, wire, set
   properties); execution is being wired engine-by-engine
-- **40 planned** - reserved in the palette so the roadmap is visible,
+- **38 planned** - reserved in the palette so the roadmap is visible,
   not yet executable
 
 If you drop a planned or preview tile and try to run, the executor
@@ -90,10 +90,11 @@ Capabilities table in the README.
 |---|---|
 | `src.avro` / `snk.avro` | DuckDB community `avro` extension is on v1.3 and needs a v1.5 release for Linux x64; tile stays preview until the extension publishes |
 | `src.orc` / `snk.orc` | Apache ORC reader; no native DuckDB extension |
-| `src.xml` / `snk.xml` | `quick-xml` - tractable; XML pulls in schema-validation scope |
-| `src.yaml` | `serde_yaml`; trivial wrapper, on the short list |
-| `src.toml` | `toml` crate; trivial wrapper, on the short list |
-| `src.fixedwidth` | Positional column read; tractable via `read_csv` with regex |
+| `src.xml` / `snk.xml` | `quick-xml` - tractable; XML pulls in schema-validation scope so design needs care (row-path? attribute-vs-text handling?) |
+| `src.fixedwidth` | Positional column read; tractable via DuckDB's `read_csv` with explicit substr extraction |
+
+`src.yaml`, `snk.yaml`, `src.toml`, `snk.toml` shipped - see the
+Capabilities table in the README.
 
 ### Custom-code stages
 
