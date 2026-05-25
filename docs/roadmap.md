@@ -6,10 +6,10 @@ reel; this is the full ledger.
 
 The palette currently carries **303 components**, broken down:
 
-- **268 available** - executes on the DuckDB engine today
+- **269 available** - executes on the DuckDB engine today
 - **11 preview** - configurable in the designer (drag, wire, set
   properties); execution is being wired engine-by-engine
-- **24 planned** - reserved in the palette so the roadmap is visible,
+- **23 planned** - reserved in the palette so the roadmap is visible,
   not yet executable
 
 If you drop a planned or preview tile and try to run, the executor
@@ -145,7 +145,6 @@ Search via DuckDB `vss` / `fts`) ships today.
 | Component | Notes |
 |---|---|
 | `src.grpc` | Protobuf parsing + per-service tonic codegen; non-trivial |
-| `src.soap` | Workaround: use `src.rest` with a POST body of the SOAP envelope until a real component lands |
 
 ---
 

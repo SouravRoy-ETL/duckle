@@ -34,9 +34,9 @@ use plan::{
     KafkaSourceSpec, MilvusSourceSpec, MongoSinkSpec, MongoSourceSpec, NatsSinkSpec,
     NatsSourceSpec, OracleSinkSpec, OracleSourceSpec, PubSubSinkSpec, PubSubSourceSpec,
     QdrantSourceSpec, RabbitSinkSpec, RabbitSourceSpec, RedisSinkSpec, RedisSourceSpec,
-    RestPagination, RestSourceSpec, ShellSpec, SnowflakeAuth, SnowflakeSinkSpec,
-    SnowflakeSourceSpec, SqlServerSinkSpec, SqlServerSourceSpec, WeaviateSourceSpec, WebhookSpec,
-    XmlSinkSpec, XmlSourceSpec,
+    RestPagination, RestResponseFormat, RestSourceSpec, ShellSpec, SnowflakeAuth,
+    SnowflakeSinkSpec, SnowflakeSourceSpec, SqlServerSinkSpec, SqlServerSourceSpec,
+    WeaviateSourceSpec, WebhookSpec, XmlSinkSpec, XmlSourceSpec,
 };
 
 #[derive(Debug, Error)]
@@ -1804,84 +1804,9 @@ impl DuckdbEngine {
         db: &Path,
         spec: &XmlSourceSpec,
     ) -> Result<String, EngineError> {
-        use quick_xml::events::Event;
-        use quick_xml::reader::Reader;
-
         let content = std::fs::read_to_string(&spec.path)
             .map_err(|e| EngineError::Query(format!("xml: read {}: {}", spec.path, e)))?;
-        let mut reader = Reader::from_str(&content);
-        reader.config_mut().trim_text(true);
-
-        let row_path: Vec<String> = spec
-            .row_path
-            .trim_matches('/')
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect();
-
-        // Stack frames: (element_name, attrs+children builder, text accumulator).
-        let mut stack: Vec<(String, serde_json::Map<String, JsonValue>, String)> = Vec::new();
-        let mut rows: Vec<JsonValue> = Vec::new();
-        let mut buf = Vec::new();
-        loop {
-            self.check_cancelled()?;
-            let event = reader
-                .read_event_into(&mut buf)
-                .map_err(|e| EngineError::Query(format!("xml: parse: {}", e)))?;
-            match event {
-                Event::Eof => break,
-                Event::Start(e) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    let mut builder = serde_json::Map::new();
-                    for attr in e.attributes().flatten() {
-                        let k = format!(
-                            "@{}",
-                            String::from_utf8_lossy(attr.key.as_ref())
-                        );
-                        let v = String::from_utf8_lossy(&attr.value).to_string();
-                        builder.insert(k, JsonValue::String(v));
-                    }
-                    stack.push((name, builder, String::new()));
-                }
-                Event::Empty(e) => {
-                    let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                    let mut builder = serde_json::Map::new();
-                    for attr in e.attributes().flatten() {
-                        let k = format!(
-                            "@{}",
-                            String::from_utf8_lossy(attr.key.as_ref())
-                        );
-                        let v = String::from_utf8_lossy(&attr.value).to_string();
-                        builder.insert(k, JsonValue::String(v));
-                    }
-                    xml_close_element(
-                        &mut stack,
-                        &mut rows,
-                        &row_path,
-                        &name,
-                        builder,
-                        String::new(),
-                    );
-                }
-                Event::Text(e) => {
-                    let text = String::from_utf8_lossy(
-                        e.unescape().unwrap_or_default().as_ref().as_bytes(),
-                    )
-                    .to_string();
-                    if let Some(last) = stack.last_mut() {
-                        last.2.push_str(&text);
-                    }
-                }
-                Event::End(_) => {
-                    if let Some((name, builder, text)) = stack.pop() {
-                        xml_close_element(&mut stack, &mut rows, &row_path, &name, builder, text);
-                    }
-                }
-                _ => {}
-            }
-            buf.clear();
-        }
+        let rows = walk_xml_to_rows(&content, &spec.row_path, &self.cancel)?;
         let count = rows.len();
         materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
         Ok(format!(
@@ -3456,18 +3381,33 @@ impl DuckdbEngine {
             };
             // Capture Link header before consuming the response body.
             let link_header = response_raw.header("link").map(String::from);
-            let response: JsonValue = response_raw
-                .into_json()
-                .map_err(|e| EngineError::Query(format!("REST response not JSON: {}", e)))?;
-            // Extract rows array
-            let rows = if spec.response_path.is_empty() {
-                response.as_array().cloned().unwrap_or_default()
-            } else {
-                response
-                    .pointer(&spec.response_path)
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default()
+            // For XML, parse as text + walk row_path; pagination is
+            // not meaningful (SOAP has no cross-envelope convention)
+            // so we treat the JSON-pointer/cursor variants as no-ops
+            // by returning a Null response from this branch.
+            let (rows, response): (Vec<JsonValue>, JsonValue) = match spec.response_format {
+                RestResponseFormat::Json => {
+                    let response: JsonValue = response_raw.into_json().map_err(|e| {
+                        EngineError::Query(format!("REST response not JSON: {}", e))
+                    })?;
+                    let rows = if spec.response_path.is_empty() {
+                        response.as_array().cloned().unwrap_or_default()
+                    } else {
+                        response
+                            .pointer(&spec.response_path)
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default()
+                    };
+                    (rows, response)
+                }
+                RestResponseFormat::Xml => {
+                    let body = response_raw.into_string().map_err(|e| {
+                        EngineError::Query(format!("REST XML response read: {}", e))
+                    })?;
+                    let rows = walk_xml_to_rows(&body, &spec.response_path, &self.cancel)?;
+                    (rows, JsonValue::Null)
+                }
             };
             let row_count = rows.len();
             all_rows.extend(rows);
@@ -4844,6 +4784,16 @@ fn xml_close_element(
     // use cases when combined with a single-segment path.
     let mut current_path: Vec<&str> = stack.iter().map(|(n, _, _)| n.as_str()).collect();
     current_path.push(name);
+    // Compare element names ignoring namespace prefix on both sides
+    // (`soap:Envelope` matches user's `Envelope` as well as their
+    // `soap:Envelope`). The user can still preserve namespaces in
+    // their row_path if they want exact-match against a single ns.
+    fn local(name: &str) -> &str {
+        match name.rfind(':') {
+            Some(i) => &name[i + 1..],
+            None => name,
+        }
+    }
     let matches = if row_path.is_empty() {
         // No filter - match every direct child of the root only, to
         // avoid emitting nested structures as separate rows.
@@ -4853,7 +4803,7 @@ fn xml_close_element(
             && current_path[current_path.len() - row_path.len()..]
                 .iter()
                 .zip(row_path.iter())
-                .all(|(a, b)| *a == b.as_str())
+                .all(|(a, b)| local(a) == local(b.as_str()))
     };
 
     if matches {
@@ -4872,6 +4822,87 @@ fn xml_close_element(
             }
         }
     }
+}
+
+/// Parse `content` as XML and walk slash-separated `row_path` (e.g.
+/// `library/books/book`). Each match becomes one row, with attributes
+/// keyed `@name`, text content under `_text`, and nested children
+/// nested as sub-objects. Shared between src.xml (file input) and the
+/// XML response branch of src.rest / src.soap (in-memory string input).
+fn walk_xml_to_rows(
+    content: &str,
+    row_path: &str,
+    cancel: &Arc<AtomicBool>,
+) -> Result<Vec<JsonValue>, EngineError> {
+    use quick_xml::events::Event;
+    use quick_xml::reader::Reader;
+
+    let mut reader = Reader::from_str(content);
+    reader.config_mut().trim_text(true);
+    let row_path_parts: Vec<String> = row_path
+        .trim_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    let mut stack: Vec<(String, serde_json::Map<String, JsonValue>, String)> = Vec::new();
+    let mut rows: Vec<JsonValue> = Vec::new();
+    let mut buf = Vec::new();
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(EngineError::Cancelled);
+        }
+        let event = reader
+            .read_event_into(&mut buf)
+            .map_err(|e| EngineError::Query(format!("xml: parse: {}", e)))?;
+        match event {
+            Event::Eof => break,
+            Event::Start(e) => {
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let mut builder = serde_json::Map::new();
+                for attr in e.attributes().flatten() {
+                    let k = format!("@{}", String::from_utf8_lossy(attr.key.as_ref()));
+                    let v = String::from_utf8_lossy(&attr.value).to_string();
+                    builder.insert(k, JsonValue::String(v));
+                }
+                stack.push((name, builder, String::new()));
+            }
+            Event::Empty(e) => {
+                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                let mut builder = serde_json::Map::new();
+                for attr in e.attributes().flatten() {
+                    let k = format!("@{}", String::from_utf8_lossy(attr.key.as_ref()));
+                    let v = String::from_utf8_lossy(&attr.value).to_string();
+                    builder.insert(k, JsonValue::String(v));
+                }
+                xml_close_element(
+                    &mut stack,
+                    &mut rows,
+                    &row_path_parts,
+                    &name,
+                    builder,
+                    String::new(),
+                );
+            }
+            Event::Text(e) => {
+                let text = String::from_utf8_lossy(
+                    e.unescape().unwrap_or_default().as_ref().as_bytes(),
+                )
+                .to_string();
+                if let Some(last) = stack.last_mut() {
+                    last.2.push_str(&text);
+                }
+            }
+            Event::End(_) => {
+                if let Some((name, builder, text)) = stack.pop() {
+                    xml_close_element(&mut stack, &mut rows, &row_path_parts, &name, builder, text);
+                }
+            }
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok(rows)
 }
 
 /// Convert a JSON value into an apache-avro Value matching the

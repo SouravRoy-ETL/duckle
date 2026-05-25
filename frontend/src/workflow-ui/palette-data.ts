@@ -170,7 +170,7 @@ export const PALETTE: Category[] = [
                     src('graphql', 'GraphQL', 'available', 'POST a GraphQL query to an endpoint and walk the response data path. Rides snk.rest/src.rest infrastructure; auth via Bearer / API-Key.'),
                     src('grpc', 'gRPC', 'planned'),
                     src('webhook', 'Webhook', 'planned'),
-                    src('soap', 'SOAP', 'planned'),
+                    src('soap', 'SOAP', 'available', 'SOAP / generic XML-API source. Thin alias over src.rest with defaults: POST, Content-Type text/xml; charset=utf-8, responseFormat=xml. Set responsePath to the element-name walk into the body (e.g. Envelope/Body/GetUsersResponse/Users/User), supply the XML envelope in `body`, optionally add a `soapAction` prop for the SOAPAction header.'),
                     src('odata', 'OData', 'available', 'OData v4 source - thin alias over src.rest. Defaults: responsePath /value, pagination follows @odata.nextLink as a complete URL. Set authType (basic / bearer / apikey) on the form. Works with SAP, D365, Microsoft Graph, any OData v4 endpoint.'),
                 ],
             },

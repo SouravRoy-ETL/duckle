@@ -752,6 +752,19 @@ pub enum RestPagination {
     NextUrl { next_path: String },
 }
 
+/// Response body parser for src.rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestResponseFormat {
+    /// Parse as JSON; walk `response_path` JSON pointer to find rows.
+    Json,
+    /// Parse as XML; walk `response_path` as an element-name path
+    /// (e.g. `Envelope/Body/GetTickersResponse/Tickers/Ticker`) and
+    /// emit one row per match. Used by src.soap and other XML APIs.
+    /// Pagination is forced to None for XML (SOAP doesn't define a
+    /// cross-envelope pagination convention).
+    Xml,
+}
+
 /// src.rest: generic HTTP-API source. Fetches a URL, parses the JSON
 /// response, optionally walks a JSON pointer (`response_path`) to
 /// extract the array of row objects, and optionally follows
@@ -764,10 +777,12 @@ pub struct RestSourceSpec {
     pub method: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
-    /// JSON pointer (RFC 6901) into the response that yields the
-    /// array of row objects. Empty string = the response root IS the
-    /// array. Example: "/data" or "/results/items".
+    /// JSON pointer (RFC 6901) for JSON responses, or slash-separated
+    /// element-name walk for XML responses. Empty string = the
+    /// response root IS the row container.
     pub response_path: String,
+    /// JSON (default) or XML body parsing.
+    pub response_format: RestResponseFormat,
     /// How to walk subsequent pages.
     pub pagination: RestPagination,
     /// Hard cap on pages fetched (safety net against runaway loops).
@@ -2537,6 +2552,7 @@ fn build_stage(
             headers,
             body: Some(serde_json::to_string(&body).unwrap_or_else(|_| "{}".into())),
             response_path,
+            response_format: RestResponseFormat::Json,
             pagination: RestPagination::None,
             max_pages: 1,
         });
@@ -2563,6 +2579,7 @@ fn build_stage(
             | "src.intercom"
             | "src.couchdb"
             | "src.odata"
+            | "src.soap"
     ) {
         // Generic REST source + thin vendor aliases. Vendors share
         // the same plumbing - the palette/form pre-fills url, auth
@@ -2571,15 +2588,43 @@ fn build_stage(
         // treats them identically. Any prefilled value is overridable.
         // src.odata: defaults to responsePath=/value + nextUrl
         // pagination at /@odata.nextLink (the OData v4 contract).
+        // src.soap: defaults to POST + Content-Type text/xml + XML
+        // response parsing (responsePath walks element names from the
+        // SOAP envelope root, e.g. Envelope/Body/Foo/Bar).
         let url = string_prop(&props, "url")
             .filter(|s| !s.is_empty())
             .ok_or_else(|| EngineError::Config(format!("{}: url required", component_id)))?;
         let method = string_prop(&props, "method")
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "GET".into())
+            .unwrap_or_else(|| {
+                if component_id == "src.soap" {
+                    "POST".into()
+                } else {
+                    "GET".into()
+                }
+            })
             .to_uppercase();
         let body = string_prop(&props, "body").filter(|s| !s.is_empty());
         let mut headers = headers_from_props(&props);
+        // SOAP needs a content-type and (often) a SOAPAction header.
+        // Only set defaults if the user didn't already pass them via
+        // the headers form.
+        if component_id == "src.soap" {
+            let has_ct = headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("Content-Type"));
+            if !has_ct {
+                headers.push(("Content-Type".into(), "text/xml; charset=utf-8".into()));
+            }
+            if let Some(action) = string_prop(&props, "soapAction").filter(|s| !s.is_empty()) {
+                let has_sa = headers
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("SOAPAction"));
+                if !has_sa {
+                    headers.push(("SOAPAction".into(), action));
+                }
+            }
+        }
         let auth_type = string_prop(&props, "authType").unwrap_or_else(|| "none".into());
         let auth_token = string_prop(&props, "authToken").unwrap_or_default();
         if !auth_token.is_empty() {
@@ -2589,6 +2634,13 @@ fn build_stage(
                 _ => {}
             }
         }
+        let response_format = if component_id == "src.soap"
+            || string_prop(&props, "responseFormat").as_deref() == Some("xml")
+        {
+            RestResponseFormat::Xml
+        } else {
+            RestResponseFormat::Json
+        };
         let response_path = string_prop(&props, "responsePath")
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| {
@@ -2672,6 +2724,7 @@ fn build_stage(
             headers,
             body,
             response_path,
+            response_format,
             pagination,
             max_pages,
         });

@@ -6816,6 +6816,117 @@ fn code_shell_captures_stdout_and_exit_code() {
     );
 }
 
+/// src.soap: POST a SOAP envelope, parse the XML response, walk the
+/// row_path into the response body, emit one row per match. Uses the
+/// same tiny TCP-listener pattern as the REST tests.
+#[test]
+fn src_soap_parses_xml_response_and_emits_rows() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let engine = engine_or_skip!();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let captured = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let cap = captured.clone();
+    let handle = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            stream
+                .set_read_timeout(Some(Duration::from_millis(250)))
+                .ok();
+            stream.set_nodelay(true).ok();
+            let mut buf = Vec::with_capacity(8192);
+            let mut chunk = [0u8; 4096];
+            for _ in 0..16 {
+                match stream.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            cap.lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&buf).to_string());
+            let body = r#"<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <GetUsersResponse>
+      <Users>
+        <User id="1"><name>Alice</name><role>admin</role></User>
+        <User id="2"><name>Bob</name><role>user</role></User>
+        <User id="3"><name>Carol</name><role>user</role></User>
+      </Users>
+    </GetUsersResponse>
+  </soap:Body>
+</soap:Envelope>"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/xml; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(body.as_bytes());
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let out = out_path(tmp.path(), "out.csv");
+    let url = format!("http://127.0.0.1:{}/Users.asmx", port);
+    // Note no responseFormat=xml or method=POST set explicitly - the
+    // src.soap component_id triggers both defaults in the planner.
+    let envelope = r#"<?xml version="1.0"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body><GetUsers/></soap:Body>
+</soap:Envelope>"#;
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.soap", json!({
+                "url": url,
+                "body": envelope,
+                "soapAction": "GetUsers",
+                "responsePath": "Envelope/Body/GetUsersResponse/Users/User",
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "k")]),
+    ));
+    let _ = handle.join();
+    assert_eq!(r.status, "ok", "src.soap failed: {:?}", r.error);
+    let n = count(&format!("read_csv_auto('{}')", out));
+    assert_eq!(n, 3, "expected 3 SOAP rows, got {}", n);
+
+    // Verify request was POST + text/xml content-type + SOAPAction
+    // header + the envelope body.
+    let reqs = captured.lock().unwrap();
+    let req = &reqs[0];
+    assert!(
+        req.starts_with("POST "),
+        "expected POST, got: {}",
+        &req[..req.find('\n').unwrap_or(80).min(req.len())]
+    );
+    assert!(
+        req.to_lowercase().contains("content-type: text/xml"),
+        "expected text/xml content-type: {}",
+        req
+    );
+    assert!(
+        req.to_lowercase().contains("soapaction: getusers"),
+        "expected SOAPAction header: {}",
+        req
+    );
+    // Verify columns parsed correctly - name + role + @id from the
+    // <User id="..."><name>..</name><role>..</role></User> shape.
+    let alice_role = scalar_string(&format!(
+        "SELECT role FROM read_csv_auto('{}') WHERE name = 'Alice'",
+        out
+    ));
+    assert_eq!(alice_role, "admin");
+}
+
 /// code.shell with timeoutMs: pick a command that sleeps longer than
 /// the timeout and verify the engine kills the child + returns an
 /// error (rather than waiting forever).
