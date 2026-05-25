@@ -20,7 +20,9 @@ use tauri::Manager;
 use tracing_subscriber::EnvFilter;
 
 mod engine_manager;
+mod llama_chat;
 use engine_manager::{EngineStatus, InstallProgress};
+use llama_chat::{ChatEvent, ChatMessage};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -80,7 +82,9 @@ pub fn run() {
             schedule_delete,
             schedule_run_now,
             engine_status,
-            engine_install
+            engine_install,
+            chat_send,
+            chat_extract_pipeline
         ])
         .run(tauri::generate_context!())
         .expect("error while running duckle");
@@ -316,8 +320,8 @@ fn engine_status(app: tauri::AppHandle) -> Result<Vec<EngineStatus>, String> {
     Ok(engine_manager::status(&dir))
 }
 
-/// Download + install an engine (duckdb / slothdb) into app-data,
-/// streaming progress.
+/// Download + install an engine (duckdb / slothdb / llamacpp) into
+/// app-data, streaming progress.
 #[tauri::command]
 async fn engine_install(
     app: tauri::AppHandle,
@@ -336,4 +340,58 @@ async fn engine_install(
         tracing::warn!("Engine install failed: {}", e);
     }
     result
+}
+
+// ---- AI chat assistant -------------------------------------------------
+
+/// Send a message to the local Qwen model and stream tokens back over
+/// the `on_event` channel. Lazy-boots `llama-server` on the first call
+/// of an app run; reuses the same subprocess for subsequent calls.
+#[tauri::command]
+async fn chat_send(
+    app: tauri::AppHandle,
+    history: Vec<ChatMessage>,
+    on_event: Channel<ChatEvent>,
+) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let bin = engine_manager::llamacpp_path(&dir);
+    let model = engine_manager::llama_model_path(&dir);
+    tokio::task::spawn_blocking(move || {
+        // Lazy boot: hold the mutex only long enough to check + spawn.
+        let port = {
+            let mut guard = llama_chat::LLAMA_SERVER.lock().unwrap();
+            if guard.is_none() {
+                match llama_chat::LlamaServer::spawn(&bin, &model) {
+                    Ok(srv) => {
+                        let p = srv.port();
+                        *guard = Some(srv);
+                        p
+                    }
+                    Err(e) => {
+                        let _ = on_event.send(ChatEvent::Error { message: e.clone() });
+                        return Err(e);
+                    }
+                }
+            } else {
+                guard.as_ref().unwrap().port()
+            }
+        };
+        if let Err(e) = llama_chat::chat_stream(port, &history, |evt| {
+            let _ = on_event.send(evt);
+        }) {
+            let _ = on_event.send(ChatEvent::Error { message: e.clone() });
+            return Err(e);
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Pull a Duckle pipeline JSON out of an assistant message - the
+/// model is asked to wrap pipelines in ```json fenced code blocks.
+/// Returns the parsed JSON for the frontend to merge into the canvas.
+#[tauri::command]
+fn chat_extract_pipeline(text: String) -> Result<JsonValue, String> {
+    llama_chat::extract_pipeline(&text)
 }

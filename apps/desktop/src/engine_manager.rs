@@ -12,6 +12,14 @@ use std::path::{Path, PathBuf};
 
 pub const DUCKDB_VERSION: &str = "1.5.3";
 pub const SLOTHDB_VERSION: &str = "0.2.7";
+/// Pinned llama.cpp build. Bump periodically; the GGUF wire format
+/// is stable so newer server binaries keep working with older models.
+pub const LLAMACPP_BUILD: &str = "b4400";
+/// HuggingFace model artifact for the AI chat assistant. Qwen2.5
+/// Coder 1.5B Instruct Q4_K_M - ~1.1 GB, runs on CPU on typical
+/// laptops, tuned for code / structured-JSON generation.
+pub const LLAMA_MODEL_REPO: &str = "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF";
+pub const LLAMA_MODEL_FILE: &str = "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf";
 
 /// Static description of an installable engine.
 struct EngineSpec {
@@ -45,7 +53,20 @@ const SLOTHDB: EngineSpec = EngineSpec {
     binary: "slothdb",
 };
 
-const ENGINES: [&EngineSpec; 2] = [&DUCKDB, &SLOTHDB];
+/// llama.cpp HTTP server + a small Qwen GGUF model. Treated as an
+/// optional "engine" for UX consistency with the setup screen but
+/// powers the chat assistant rather than the SQL execution path.
+const LLAMACPP: EngineSpec = EngineSpec {
+    id: "llamacpp",
+    name: "AI Assistant",
+    description: "Local chat assistant via llama.cpp + Qwen 1.5B. Downloads ~1.1 GB; runs entirely offline once installed.",
+    required: false,
+    repo: "ggerganov/llama.cpp",
+    version: LLAMACPP_BUILD,
+    binary: "llama-server",
+};
+
+const ENGINES: [&EngineSpec; 3] = [&DUCKDB, &SLOTHDB, &LLAMACPP];
 
 fn spec(id: &str) -> Option<&'static EngineSpec> {
     ENGINES.iter().copied().find(|e| e.id == id)
@@ -70,6 +91,16 @@ fn binary_path(app_data: &Path, s: &EngineSpec) -> PathBuf {
 /// Public helper kept for the engine() resolver in lib.rs.
 pub fn duckdb_path(app_data: &Path) -> PathBuf {
     binary_path(app_data, &DUCKDB)
+}
+
+/// Path the AI assistant server binary lands at.
+pub fn llamacpp_path(app_data: &Path) -> PathBuf {
+    binary_path(app_data, &LLAMACPP)
+}
+
+/// Path the Qwen GGUF model file lands at (sibling of the binary).
+pub fn llama_model_path(app_data: &Path) -> PathBuf {
+    engine_dir(app_data, &LLAMACPP).join(LLAMA_MODEL_FILE)
 }
 
 /// Release asset name for this OS/arch, or None if unsupported.
@@ -99,6 +130,18 @@ fn asset_for(s: &EngineSpec) -> Option<String> {
             }
             .to_string(),
         ),
+        // llama.cpp ships pre-built binaries per OS/arch. We pick the
+        // most-compatible variant (no GPU acceleration) so the model
+        // runs on any CPU - the chat assistant only needs ~5 tok/s.
+        "llamacpp" => Some(
+            match (os, arch) {
+                ("windows", "x86_64") => format!("llama-{}-bin-win-cpu-x64.zip", LLAMACPP_BUILD),
+                ("linux", "x86_64") => format!("llama-{}-bin-ubuntu-x64.zip", LLAMACPP_BUILD),
+                ("macos", "aarch64") => format!("llama-{}-bin-macos-arm64.zip", LLAMACPP_BUILD),
+                ("macos", _) => format!("llama-{}-bin-macos-x64.zip", LLAMACPP_BUILD),
+                _ => return None,
+            },
+        ),
         _ => None,
     }
 }
@@ -126,6 +169,10 @@ pub enum InstallProgress {
     /// means the first time a fresh user touches a Postgres source or an
     /// S3 file there is no network hop.
     InstallingExtension { name: String, index: u32, total: u32 },
+    /// Model-file download phase, used only by the llamacpp engine.
+    /// The model is much larger than the binary (~1.1 GB vs ~50 MB)
+    /// so we report its progress separately for clearer UX.
+    DownloadingModel { received: u64, total: Option<u64> },
     Done { path: String },
 }
 
@@ -267,17 +314,43 @@ fn install_spec<F: FnMut(InstallProgress)>(
     let target = binary_path(app_data, s);
 
     if asset.to_ascii_lowercase().ends_with(".zip") {
-        // Zipped distribution (DuckDB) - pull the binary out.
         on_progress(InstallProgress::Extracting);
         let want = binary_file_name(s);
         let reader = std::io::Cursor::new(buf);
         let mut archive = zip::ZipArchive::new(reader).map_err(|e| e.to_string())?;
         let mut extracted = false;
+        // llama.cpp's zip ships the server binary alongside several
+        // shared libraries (llama.dll, ggml.dll, ...) that the binary
+        // dlopens at runtime - we have to extract them too. DuckDB
+        // ships a single self-contained binary; the targeted extract
+        // path stays for it.
+        let extract_all = s.id == "llamacpp";
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
             let name = file.name().to_string();
-            let leaf = name.rsplit('/').next().unwrap_or(&name);
-            if leaf.eq_ignore_ascii_case(&want) || leaf.eq_ignore_ascii_case(s.binary) {
+            let leaf = name.rsplit('/').next().unwrap_or(&name).to_string();
+            if file.is_dir() || leaf.is_empty() {
+                continue;
+            }
+            let is_target_binary =
+                leaf.eq_ignore_ascii_case(&want) || leaf.eq_ignore_ascii_case(s.binary);
+            if extract_all {
+                let out_path = dir.join(&leaf);
+                let mut out =
+                    std::fs::File::create(&out_path).map_err(|e| e.to_string())?;
+                std::io::copy(&mut file, &mut out).map_err(|e| e.to_string())?;
+                if is_target_binary {
+                    extracted = true;
+                }
+                #[cfg(unix)]
+                if is_target_binary {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &out_path,
+                        std::fs::Permissions::from_mode(0o755),
+                    );
+                }
+            } else if is_target_binary {
                 let mut out = std::fs::File::create(&target).map_err(|e| e.to_string())?;
                 std::io::copy(&mut file, &mut out).map_err(|e| e.to_string())?;
                 extracted = true;
@@ -321,9 +394,73 @@ fn install_spec<F: FnMut(InstallProgress)>(
         install_duckdb_extensions(&target, &mut on_progress);
     }
 
+    // llama.cpp's binary alone is useless without a model. Fetch the
+    // pinned Qwen GGUF from HuggingFace right after the binary lands.
+    if s.id == "llamacpp" {
+        install_llama_model(app_data, &mut on_progress)?;
+    }
+
     let path = target.to_string_lossy().to_string();
     on_progress(InstallProgress::Done { path: path.clone() });
     Ok(path)
+}
+
+/// Download the Qwen GGUF model file into the llamacpp engine dir.
+/// Separate phase from the binary download so the UI can show "stage
+/// 2 of 2" instead of one big progress bar for both. HuggingFace
+/// supports range requests; we just stream sequentially for simplicity.
+fn install_llama_model<F: FnMut(InstallProgress)>(
+    app_data: &Path,
+    on_progress: &mut F,
+) -> Result<(), String> {
+    let target = llama_model_path(app_data);
+    // Idempotent: if the model file is already there and non-empty,
+    // skip the download.
+    if let Ok(meta) = std::fs::metadata(&target) {
+        if meta.len() > 1_000_000 {
+            return Ok(());
+        }
+    }
+    let url = format!(
+        "https://huggingface.co/{}/resolve/main/{}",
+        LLAMA_MODEL_REPO, LLAMA_MODEL_FILE
+    );
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("duckle")
+        // No global timeout - the model is over a GB on home internet.
+        .timeout(None)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut resp = client.get(&url).send().map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Couldn't download Qwen model (HTTP {}). HuggingFace may be rate-limiting; try again in a minute.",
+            resp.status().as_u16()
+        ));
+    }
+    let total = resp.content_length();
+    on_progress(InstallProgress::DownloadingModel { received: 0, total });
+    let mut out = std::fs::File::create(&target).map_err(|e| e.to_string())?;
+    let mut chunk = [0u8; 256 * 1024];
+    let mut received: u64 = 0;
+    loop {
+        let n = resp.read(&mut chunk).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        std::io::Write::write_all(&mut out, &chunk[..n]).map_err(|e| e.to_string())?;
+        received += n as u64;
+        on_progress(InstallProgress::DownloadingModel { received, total });
+    }
+    // Sanity check: GGUF files start with the magic bytes "GGUF".
+    let mut header = [0u8; 4];
+    let mut f = std::fs::File::open(&target).map_err(|e| e.to_string())?;
+    let _ = std::io::Read::read(&mut f, &mut header);
+    if &header != b"GGUF" {
+        let _ = std::fs::remove_file(&target);
+        return Err("Downloaded model is not a valid GGUF file (header mismatch)".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -331,14 +468,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_lists_both_engines_missing_in_empty_dir() {
+    fn status_lists_all_engines_missing_in_empty_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let st = status(tmp.path());
-        assert_eq!(st.len(), 2);
+        assert_eq!(st.len(), 3);
         let duck = st.iter().find(|e| e.id == "duckdb").unwrap();
         assert!(!duck.installed && duck.required && duck.available);
         let sloth = st.iter().find(|e| e.id == "slothdb").unwrap();
         assert!(!sloth.installed && !sloth.required);
+        let llama = st.iter().find(|e| e.id == "llamacpp").unwrap();
+        assert!(!llama.installed && !llama.required);
     }
 
     #[test]

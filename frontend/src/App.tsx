@@ -12,7 +12,7 @@ import {
     type OnSelectionChangeParams,
 } from '@xyflow/react';
 import type { ConnectionType } from './canvas/connection-types';
-import { Braces, FolderOpen, Moon, Sun } from 'lucide-react';
+import { Braces, FolderOpen, Moon, Sparkles, Sun } from 'lucide-react';
 import EditorTabs from './workflow-ui/EditorTabs';
 import EditorHeader, { type Job } from './workflow-ui/EditorHeader';
 import EngineSelector, { type EngineId } from './workflow-ui/EngineSelector';
@@ -30,6 +30,7 @@ import {
 } from './tauri-bridge';
 import ScheduleEditorModal from './workflow-ui/ScheduleEditorModal';
 import EngineSetupModal from './workflow-ui/EngineSetupModal';
+import ChatPanel from './workflow-ui/ChatPanel';
 import WindowControls from './workflow-ui/WindowControls';
 import { engineStatus } from './tauri-bridge';
 import { RunStatusContext } from './canvas/run-status-context';
@@ -210,6 +211,7 @@ export default function App() {
     const [engineGate, setEngineGate] = useState<'checking' | 'engine-setup' | 'ready'>(
         () => (isInTauri() ? 'checking' : 'ready'),
     );
+    const [showChatPanel, setShowChatPanel] = useState(false);
 
     useEffect(() => {
         if (!isInTauri()) return;
@@ -1235,6 +1237,56 @@ export default function App() {
         [repo],
     );
 
+    // Map a component_id prefix to the React Flow node "kind" the
+    // canvas understands. Mirrors how SAMPLE_NODES classifies new
+    // tiles when a user drags from the palette.
+    const nodeKindFromComponent = (componentId: string): string => {
+        if (componentId.startsWith('src.')) return 'source';
+        if (componentId.startsWith('snk.')) return 'sink';
+        if (componentId.startsWith('ctl.')) return 'control';
+        if (componentId.startsWith('qa.')) return 'transform';
+        if (componentId.startsWith('code.')) return 'transform';
+        if (componentId.startsWith('xf.')) return 'transform';
+        return 'transform';
+    };
+
+    // Convert an AI-generated pipeline JSON (from chat) into the
+    // canvas's PipelineState shape and replace the current pipeline's
+    // content. Auto-lays nodes out left-to-right since the model
+    // doesn't ship coordinates. Falls back to a no-op if the JSON
+    // doesn't validate.
+    const handleInsertAiPipeline = useCallback(
+        (raw: unknown) => {
+            if (!raw || typeof raw !== 'object') return;
+            const obj = raw as {
+                nodes?: Array<{ id?: string; type?: string; data?: { label?: string; props?: unknown } }>;
+                edges?: Array<{ id?: string; source?: string; target?: string }>;
+            };
+            if (!Array.isArray(obj.nodes)) return;
+            const nodes: Node<DuckleNodeData>[] = obj.nodes.map((n, i) => ({
+                id: n.id ?? `n${i + 1}`,
+                type: nodeKindFromComponent(n.type ?? 'src.csv'),
+                position: { x: 80 + i * 260, y: 160 },
+                data: {
+                    label: n.data?.label ?? (n.type ?? 'Node').replace(/^[^.]+\./, ''),
+                    componentId: n.type ?? 'src.csv',
+                    props: (n.data?.props as Record<string, unknown> | undefined) ?? {},
+                } as DuckleNodeData,
+            }));
+            const edges: Edge[] = (obj.edges ?? []).map((e, i) => ({
+                id: e.id ?? `e${i + 1}`,
+                source: e.source ?? '',
+                target: e.target ?? '',
+                sourceHandle: 'main',
+                targetHandle: 'main',
+                type: 'duckle',
+            }));
+            setPipelineData(d => ({ ...d, [activeJobId]: { nodes, edges } }));
+            setJobs(js => js.map(j => (j.id === activeJobId ? { ...j, dirty: true } : j)));
+        },
+        [activeJobId],
+    );
+
     // Repo-item editor modal state (connections / contexts / docs / routines)
     type EditorState =
         | { kind: 'connection'; itemId: string | null; parentId: string }
@@ -1414,6 +1466,16 @@ export default function App() {
                 <button
                     type="button"
                     className="topbar-theme-toggle"
+                    onClick={() => setShowChatPanel(s => !s)}
+                    title="AI Assistant"
+                    aria-label="Toggle AI assistant"
+                    aria-pressed={showChatPanel}
+                >
+                    <Sparkles size={14} />
+                </button>
+                <button
+                    type="button"
+                    className="topbar-theme-toggle"
                     onClick={toggleTheme}
                     title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
                     aria-label="Toggle theme"
@@ -1523,6 +1585,13 @@ export default function App() {
 
             {showEngineSetup ? (
                 <EngineSetupModal onReady={() => setEngineGate('ready')} />
+            ) : null}
+
+            {showChatPanel ? (
+                <ChatPanel
+                    onClose={() => setShowChatPanel(false)}
+                    onInsertPipeline={handleInsertAiPipeline}
+                />
             ) : null}
 
             {showWorkspacePicker ? (

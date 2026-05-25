@@ -36,6 +36,10 @@ duckle-duckdb-engine = { workspace = true }
 duckle-scheduler = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 zip = "2"
+# Used by the AI chat assistant to talk to the local llama-server
+# subprocess over HTTP. Same blocking client we use in the engine
+# crate; reading the SSE stream via BufReader<impl Read>.
+ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
 
 [dev-dependencies]
 tempfile = "3.10"

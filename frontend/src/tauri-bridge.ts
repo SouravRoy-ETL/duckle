@@ -170,6 +170,9 @@ export type InstallProgress =
     | { phase: 'extracting' }
     | { phase: 'verifying' }
     | { phase: 'installing_extension'; name: string; index: number; total: number }
+    // llamacpp only: separate progress phase for the Qwen GGUF model
+    // (~1.1 GB, much larger than the binary itself).
+    | { phase: 'downloading_model'; received: number; total?: number }
     | { phase: 'done'; path: string }
     // Set by the frontend on a caught install error (the Rust command
     // returns Err rather than streaming this).
@@ -192,6 +195,50 @@ export async function engineInstall(
     const channel = new Channel<InstallProgress>();
     if (onProgress) channel.onmessage = onProgress;
     return await invoke<string>('engine_install', { engine, onProgress: channel });
+}
+
+// ---- AI Chat (local Qwen via llama-server) -----------------------------
+
+export type ChatMessage = { role: 'user' | 'assistant' | 'system'; content: string };
+
+export type ChatEvent =
+    | { kind: 'token'; text: string }
+    | { kind: 'done' }
+    | { kind: 'error'; message: string };
+
+/**
+ * Send a chat conversation to the local Qwen model. Tokens stream
+ * back via `onEvent`. The system prompt is added by the backend.
+ */
+export async function chatSend(
+    history: ChatMessage[],
+    onEvent: (e: ChatEvent) => void,
+): Promise<void> {
+    if (!isTauri()) {
+        onEvent({ kind: 'error', message: 'Chat is only available in the desktop app.' });
+        return;
+    }
+    const channel = new Channel<ChatEvent>();
+    channel.onmessage = onEvent;
+    try {
+        await invoke('chat_send', { history, onEvent: channel });
+    } catch (err) {
+        onEvent({ kind: 'error', message: String(err) });
+    }
+}
+
+/**
+ * Pull a Duckle pipeline JSON out of an assistant message - the
+ * model is asked to wrap pipelines in ```json fenced code blocks.
+ * Returns null if no extractable pipeline.
+ */
+export async function chatExtractPipeline(text: string): Promise<unknown | null> {
+    if (!isTauri()) return null;
+    try {
+        return await invoke('chat_extract_pipeline', { text });
+    } catch {
+        return null;
+    }
 }
 
 export async function cancelPipeline(): Promise<void> {

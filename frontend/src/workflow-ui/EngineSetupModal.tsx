@@ -197,6 +197,17 @@ function ProgressLine({ progress }: { progress: InstallProgress }) {
             label = `Installing extensions (${progress.index}/${progress.total}): ${progress.name}`;
             pct = Math.round((progress.index / progress.total) * 100);
             break;
+        case 'downloading_model': {
+            const mb = (progress.received / 1_000_000).toFixed(0);
+            if (progress.total) {
+                pct = Math.round((progress.received / progress.total) * 100);
+                const totalMb = (progress.total / 1_000_000).toFixed(0);
+                label = `Downloading model ${mb} / ${totalMb} MB`;
+            } else {
+                label = `Downloading model ${mb} MB`;
+            }
+            break;
+        }
         case 'done':
             label = 'Ready';
             pct = 100;

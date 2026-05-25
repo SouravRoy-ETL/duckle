@@ -259,6 +259,7 @@ Duckle ships a thin shell and installs its engine on first launch, which is why 
 |---|---|---|
 | **DuckDB** | Default execution engine: analytics, file formats, cloud reads, SQL pushdown. Tracking **v1.5.3** (latest stable). | Working |
 | **SlothDB** | Alternate embedded analytical engine ([SouravRoy-ETL/slothdb](https://github.com/SouravRoy-ETL/slothdb)), installed the same way and selectable per pipeline. | Installable |
+| **AI Assistant** (llama.cpp + Qwen 2.5 Coder 1.5B GGUF) | Local chat assistant that generates pipeline JSON from a natural-language description. ~1.1 GB; runs fully offline once installed; managed as a `llama-server` subprocess that exposes an OpenAI-compatible API on localhost. | Installable |
 | **Native** | In-process Rust streaming / incremental engine. | Planned |
 
 DuckDB is the default. **SlothDB is a drop-in alternate engine**: install it from the same guided first-run screen and switch to it from the engine selector in the toolbar, with no change to your pipeline. Both downloadable engines install with a progress bar and no manual setup.
