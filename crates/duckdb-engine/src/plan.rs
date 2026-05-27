@@ -4296,7 +4296,17 @@ fn build_arr_contains(inputs: &NodeInputs, props: &JsonValue) -> Result<String, 
     } else {
         format!("'{}'", sql_escape(&value))
     };
-    let expr = format!("list_contains({}, {})", quote_ident(&column), lit);
+    // COALESCE wrap: list_contains returns NULL when the array column
+    // itself is NULL (not just missing the value). Without this, any
+    // downstream `WHERE _contains` would silently drop NULL-array rows -
+    // same class of bug as the IN/NOT IN gotcha we fixed in semi/anti.
+    // Empty array correctly returns FALSE; only the NULL-array case
+    // needs the COALESCE shield.
+    let expr = format!(
+        "COALESCE(list_contains({}, {}), FALSE)",
+        quote_ident(&column),
+        lit
+    );
     let out = string_prop(props, "outputColumn")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("{}_contains", column));
@@ -4313,7 +4323,18 @@ fn build_union(inputs: &NodeInputs, distinct: bool) -> Result<String, String> {
     if mains.is_empty() {
         return Err("Union needs at least one input".into());
     }
-    let op = if distinct { " UNION " } else { " UNION ALL " };
+    // Default to `UNION [ALL] BY NAME` - DuckDB-specific syntax that
+    // matches columns by name across inputs, padding missing columns
+    // with NULL on each side. The standard SQL `UNION [ALL]` matches
+    // by POSITION and silently produces garbage if columns are reordered
+    // or one input has an extra column. ETL users almost always expect
+    // by-name semantics; legacy positional behavior is still reachable
+    // by reordering / projecting columns upstream.
+    let op = if distinct {
+        " UNION BY NAME "
+    } else {
+        " UNION ALL BY NAME "
+    };
     Ok(mains
         .iter()
         .map(|id| format!("SELECT * FROM {}", quote_ident(id)))
@@ -8017,6 +8038,73 @@ mod tests {
         let sql = &compiled.stages[0].sql;
         assert!(sql.contains("dateformat='%d/%m/%Y'"), "missing dateformat: {}", sql);
         assert!(sql.contains("timestampformat='%d/%m/%Y %H:%M:%S'"), "missing timestampformat: {}", sql);
+    }
+
+    #[test]
+    fn union_uses_by_name_to_dodge_positional_silent_corruption() {
+        // ETL users almost always expect by-name semantics. Standard SQL
+        // UNION matches by position - reordering columns in one input
+        // silently produces garbage with no error. DuckDB's UNION BY NAME
+        // matches column names + pads missing columns with NULL.
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"a","position":{"x":0,"y":0},"data":{
+                  "label":"A","componentId":"src.csv",
+                  "properties":{"path":"/tmp/a.csv","hasHeader":true}}},
+                {"id":"b","position":{"x":0,"y":0},"data":{
+                  "label":"B","componentId":"src.csv",
+                  "properties":{"path":"/tmp/b.csv","hasHeader":true}}},
+                {"id":"u","position":{"x":0,"y":0},"data":{
+                  "label":"Union","componentId":"xf.unionall","properties":{}}},
+                {"id":"k","position":{"x":0,"y":0},"data":{
+                  "label":"CSV out","componentId":"snk.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"a","target":"u",
+                  "data":{"connectionType":"main"}},
+                {"id":"e2","source":"b","target":"u",
+                  "data":{"connectionType":"main"}},
+                {"id":"e3","source":"u","target":"k",
+                  "data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let compiled = compile(&p).unwrap();
+        let union_sql = compiled.stages.iter().find(|s| s.node_id == "u").unwrap().sql.as_str();
+        assert!(union_sql.contains("UNION ALL BY NAME"), "expected BY NAME variant: {}", union_sql);
+    }
+
+    #[test]
+    fn arr_contains_is_null_safe() {
+        // list_contains(NULL_array, x) returns NULL. Without the COALESCE
+        // shield, downstream WHERE _contains would silently drop the row.
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/x.csv","hasHeader":true}}},
+                {"id":"c","position":{"x":0,"y":0},"data":{
+                  "label":"Contains","componentId":"xf.arr.contains",
+                  "properties":{"column":"tags","value":"red"}}},
+                {"id":"k","position":{"x":0,"y":0},"data":{
+                  "label":"CSV out","componentId":"snk.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s","target":"c",
+                  "data":{"connectionType":"main"}},
+                {"id":"e2","source":"c","target":"k",
+                  "data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let compiled = compile(&p).unwrap();
+        let sql = compiled.stages.iter().find(|s| s.node_id == "c").unwrap().sql.as_str();
+        assert!(sql.contains("COALESCE(list_contains"), "missing COALESCE shield: {}", sql);
+        assert!(sql.contains(", FALSE)"), "missing FALSE fallback: {}", sql);
     }
 
     #[test]
