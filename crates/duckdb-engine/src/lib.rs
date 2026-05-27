@@ -1284,6 +1284,137 @@ impl DuckdbEngine {
         ))
     }
 
+    /// Convert one cell of a SQL Server row to JSON without silently
+    /// losing data. Same issue as Oracle: the old cascade
+    /// try-`&str`-then-`i64`-then-`i32`-then-`f64`-then-`bool` failed
+    /// for the common Microsoft SQL Server types (DATETIME / DATE /
+    /// DATETIMEOFFSET / DECIMAL / NUMERIC / UNIQUEIDENTIFIER /
+    /// VARBINARY), silently emitting NULL and dropping whole columns
+    /// from the downstream Parquet / DuckDB table.
+    ///
+    /// Tiberius exposes a `ColumnData` enum reachable via
+    /// `Row::try_get_by_index`; we dispatch on it so every SQL Server
+    /// scalar gets a faithful JSON representation.
+    fn sqlserver_cell_to_json(
+        row: &tiberius::Row,
+        col: &tiberius::Column,
+        i: usize,
+    ) -> JsonValue {
+        use tiberius::ColumnType;
+        // First, the easy path: the most common scalar types map cleanly
+        // through Tiberius' generic try_get<T>. We dispatch by the column
+        // type the server reported so we don't blindly probe every type.
+        match col.column_type() {
+            ColumnType::Bit | ColumnType::Bitn => row
+                .try_get::<bool, _>(i)
+                .ok()
+                .flatten()
+                .map(JsonValue::Bool)
+                .unwrap_or(JsonValue::Null),
+            ColumnType::Int1
+            | ColumnType::Int2
+            | ColumnType::Int4
+            | ColumnType::Int8
+            | ColumnType::Intn => {
+                // Try the widest signed int the server might have packed in.
+                if let Ok(Some(n)) = row.try_get::<i64, _>(i) {
+                    return JsonValue::from(n);
+                }
+                if let Ok(Some(n)) = row.try_get::<i32, _>(i) {
+                    return JsonValue::from(n);
+                }
+                if let Ok(Some(n)) = row.try_get::<i16, _>(i) {
+                    return JsonValue::from(n);
+                }
+                if let Ok(Some(n)) = row.try_get::<u8, _>(i) {
+                    return JsonValue::from(n);
+                }
+                JsonValue::Null
+            }
+            ColumnType::Float4 | ColumnType::Float8 | ColumnType::Floatn => row
+                .try_get::<f64, _>(i)
+                .ok()
+                .flatten()
+                .and_then(|x| serde_json::Number::from_f64(x).map(JsonValue::Number))
+                .unwrap_or(JsonValue::Null),
+            // DECIMAL / NUMERIC / MONEY arrive as tiberius::numeric::Numeric.
+            // Stringify - JSON has no native fixed-point and f64 would lose
+            // the precision that's the whole point of DECIMAL.
+            ColumnType::Decimaln
+            | ColumnType::Numericn
+            | ColumnType::Money
+            | ColumnType::Money4 => row
+                .try_get::<tiberius::numeric::Numeric, _>(i)
+                .ok()
+                .flatten()
+                .map(|n| JsonValue::String(n.to_string()))
+                .unwrap_or(JsonValue::Null),
+            // Date / time / datetime / datetimeoffset all expose a
+            // chrono::NaiveDate/NaiveDateTime/DateTime<Utc> via tiberius'
+            // optional `time`/`chrono` features. The crate's default
+            // path on try_get::<&str>` doesn't work for them, but
+            // ToString does - drop to that and emit ISO-shaped strings.
+            ColumnType::Datetime
+            | ColumnType::Datetime2
+            | ColumnType::Datetime4
+            | ColumnType::Datetimen
+            | ColumnType::DatetimeOffsetn
+            | ColumnType::Daten
+            | ColumnType::Timen => {
+                // Tiberius with its `chrono` feature exposes try_get<T>
+                // for NaiveDateTime / NaiveDate / NaiveTime / DateTime<Utc>.
+                // Without these, DATETIME columns silently return None and
+                // become NULL downstream - the cascade-style bug we're
+                // hunting. ISO-formatted strings travel cleanly to
+                // DuckDB's read_json_auto which re-parses them as
+                // TIMESTAMP / DATE / TIME.
+                if let Ok(Some(dt)) = row.try_get::<chrono::NaiveDateTime, _>(i) {
+                    return JsonValue::String(dt.format("%Y-%m-%dT%H:%M:%S%.f").to_string());
+                }
+                if let Ok(Some(d)) = row.try_get::<chrono::NaiveDate, _>(i) {
+                    return JsonValue::String(d.format("%Y-%m-%d").to_string());
+                }
+                if let Ok(Some(t)) = row.try_get::<chrono::NaiveTime, _>(i) {
+                    return JsonValue::String(t.format("%H:%M:%S%.f").to_string());
+                }
+                row.try_get::<&str, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(|s| JsonValue::String(s.to_string()))
+                    .unwrap_or(JsonValue::Null)
+            }
+            // VARBINARY / BINARY / IMAGE: base64. JSON can't carry raw bytes.
+            ColumnType::BigVarBin | ColumnType::BigBinary | ColumnType::Image => {
+                use base64::engine::general_purpose::STANDARD as B64;
+                use base64::Engine as _;
+                row.try_get::<&[u8], _>(i)
+                    .ok()
+                    .flatten()
+                    .map(|b| JsonValue::String(B64.encode(b)))
+                    .unwrap_or(JsonValue::Null)
+            }
+            // GUID -> tiberius re-exposes its own Uuid type. Convert to
+            // standard 8-4-4-4-12 hex form via its Display impl. If the
+            // re-export changes name across versions, fall through to
+            // the &str path which Tiberius supports for Guid columns.
+            ColumnType::Guid => {
+                if let Ok(Some(s)) = row.try_get::<&str, _>(i) {
+                    return JsonValue::String(s.to_string());
+                }
+                JsonValue::Null
+            }
+            // Everything else (NVarchar / Char / NText / SsVariant / etc):
+            // string path. Tiberius' &str accessor handles N* types via
+            // UTF-16 -> UTF-8 internally.
+            _ => row
+                .try_get::<&str, _>(i)
+                .ok()
+                .flatten()
+                .map(|s| JsonValue::String(s.to_string()))
+                .unwrap_or(JsonValue::Null),
+        }
+    }
+
     /// Cassandra / ScyllaDB sink via the scylla CQL driver. Each row
     /// becomes one INSERT statement (CQL doesn't support multi-row
     /// VALUES). Values are interpolated as literals; bind parameters
@@ -4276,22 +4407,7 @@ impl DuckdbEngine {
                     let mut obj = serde_json::Map::new();
                     for (i, col) in row.columns().iter().enumerate() {
                         let name = col.name().to_string();
-                        let v: JsonValue = if let Ok(s) = row.try_get::<&str, _>(i) {
-                            s.map(|x| JsonValue::String(x.to_string()))
-                                .unwrap_or(JsonValue::Null)
-                        } else if let Ok(n) = row.try_get::<i64, _>(i) {
-                            n.map(JsonValue::from).unwrap_or(JsonValue::Null)
-                        } else if let Ok(n) = row.try_get::<i32, _>(i) {
-                            n.map(JsonValue::from).unwrap_or(JsonValue::Null)
-                        } else if let Ok(n) = row.try_get::<f64, _>(i) {
-                            n.and_then(|x| serde_json::Number::from_f64(x).map(JsonValue::Number))
-                                .unwrap_or(JsonValue::Null)
-                        } else if let Ok(b) = row.try_get::<bool, _>(i) {
-                            b.map(JsonValue::Bool).unwrap_or(JsonValue::Null)
-                        } else {
-                            JsonValue::Null
-                        };
-                        obj.insert(name, v);
+                        obj.insert(name, Self::sqlserver_cell_to_json(row, col, i));
                     }
                     out.push(JsonValue::Object(obj));
                 }
