@@ -37,15 +37,27 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux
           - os: ubuntu-24.04
             binary: duckle
             asset: Duckle-linux-x64
+          - os: ubuntu-24.04-arm
+            binary: duckle
+            asset: Duckle-linux-arm64
+          # macOS - macos-13 is the last Intel runner, macos-14 is M-series
+          - os: macos-13
+            binary: duckle
+            asset: Duckle-macos-x64
           - os: macos-14
             binary: duckle
             asset: Duckle-macos-arm64
+          # Windows
           - os: windows-latest
             binary: duckle.exe
             asset: Duckle-windows-x64.exe
+          - os: windows-11-arm
+            binary: duckle.exe
+            asset: Duckle-windows-arm64.exe
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
