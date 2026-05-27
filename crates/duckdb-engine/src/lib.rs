@@ -1203,17 +1203,23 @@ impl DuckdbEngine {
             .iter()
             .map(|c| c.name().to_string())
             .collect();
-        let mut rows: Vec<JsonValue> = Vec::new();
+        // Stream rows straight to the NDJSON temp file. The previous
+        // Vec<JsonValue> collector held the entire result set in RAM
+        // before handing it to DuckDB - on a million-row x 37-col pull
+        // that peaked at ~30 GB resident. Now the writer keeps a 64 KiB
+        // buffer regardless of row count.
+        let mut writer = JsonLinesWriter::open(&spec.node_id)?;
+        let mut count = 0_usize;
         for row_res in rs {
             let row = row_res.map_err(|e| EngineError::Query(format!("oracle row: {}", e)))?;
             let mut obj = serde_json::Map::new();
             for (i, name) in cols.iter().enumerate() {
                 obj.insert(name.clone(), Self::oracle_cell_to_json(&row, i));
             }
-            rows.push(JsonValue::Object(obj));
+            writer.write_row(&JsonValue::Object(obj))?;
+            count += 1;
         }
-        let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        writer.finalize_into_table(db, &spec.node_id)?;
         Ok(format!(
             "oracle: materialized {} rows into {}",
             count, spec.node_id
@@ -4395,9 +4401,21 @@ impl DuckdbEngine {
             .enable_all()
             .build()
             .map_err(|e| EngineError::Query(format!("sqlserver: tokio rt: {}", e)))?;
-        let rows: Vec<JsonValue> = rt
-            .block_on(async {
+        // Open the NDJSON file BEFORE the async block so we own the
+        // writer on the executor thread; pass it in by move so the
+        // streaming row loop can write each row as it arrives.
+        // tiberius's old into_first_result() collected the full row
+        // set into a Vec<tiberius::Row> in driver memory, doubled
+        // again when we converted to Vec<JsonValue>. For a 1 M-row
+        // pull that's two large allocations alive at once; now neither
+        // exists - rows pass through tiberius -> writer immediately.
+        let writer = JsonLinesWriter::open(&spec.node_id)?;
+        let count: usize = rt
+            .block_on(async move {
+                use futures_util::TryStreamExt;
+                use tiberius::QueryItem;
                 use tokio_util::compat::TokioAsyncWriteCompatExt;
+                let mut writer = writer;
                 let mut config = tiberius::Config::new();
                 config.host(&spec.host);
                 config.port(spec.port);
@@ -4416,28 +4434,36 @@ impl DuckdbEngine {
                 let mut client = tiberius::Client::connect(config, tcp.compat_write())
                     .await
                     .map_err(|e| format!("tds handshake: {}", e))?;
-                let stream = client
+                let mut stream = client
                     .query(&spec.query, &[])
                     .await
                     .map_err(|e| format!("query: {}", e))?;
-                let rows = stream
-                    .into_first_result()
+                let mut count = 0_usize;
+                while let Some(item) = stream
+                    .try_next()
                     .await
-                    .map_err(|e| format!("collect: {}", e))?;
-                let mut out = Vec::with_capacity(rows.len());
-                for row in rows.iter() {
+                    .map_err(|e| format!("row stream: {}", e))?
+                {
+                    let row = match item {
+                        QueryItem::Row(r) => r,
+                        QueryItem::Metadata(_) => continue,
+                    };
                     let mut obj = serde_json::Map::new();
                     for (i, col) in row.columns().iter().enumerate() {
                         let name = col.name().to_string();
-                        obj.insert(name, Self::sqlserver_cell_to_json(row, col, i));
+                        obj.insert(name, Self::sqlserver_cell_to_json(&row, col, i));
                     }
-                    out.push(JsonValue::Object(obj));
+                    writer
+                        .write_row(&JsonValue::Object(obj))
+                        .map_err(|e| format!("write row: {}", e))?;
+                    count += 1;
                 }
-                Ok::<Vec<JsonValue>, String>(out)
+                writer
+                    .finalize_into_table(db, &spec.node_id)
+                    .map_err(|e| format!("finalize: {}", e))?;
+                Ok::<usize, String>(count)
             })
             .map_err(|e| EngineError::Query(format!("sqlserver source: {}", e)))?;
-        let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
         Ok(format!(
             "sqlserver: materialized {} rows into {}",
             count, spec.node_id
@@ -5586,35 +5612,73 @@ fn materialize_jsonobjects_as_table(
     node_id: &str,
     rows: &[JsonValue],
 ) -> Result<(), EngineError> {
-    // Stream one object per line (NDJSON / JSON Lines) instead of
-    // serializing the whole Vec into a single in-memory JSON string.
-    // Two wins:
-    //   1. No O(rows) memory spike for large source pulls - we never
-    //      hold the full serialized payload at once.
-    //   2. DuckDB's read_json_auto with format='newline_delimited' is
-    //      faster than format='array' because it can parse rows in
-    //      parallel and doesn't have to track the outer-array state.
-    use std::io::{BufWriter, Write};
-    let tmp_path = unique_rest_tmp_path(node_id);
-    let file = std::fs::File::create(&tmp_path)
-        .map_err(|e| EngineError::Query(format!("rest source: create tmp file: {}", e)))?;
-    {
-        let mut w = BufWriter::with_capacity(64 * 1024, file);
-        for row in rows {
-            serde_json::to_writer(&mut w, row)
-                .map_err(|e| EngineError::Query(format!("rest source: JSON encode: {}", e)))?;
-            w.write_all(b"\n")
-                .map_err(|e| EngineError::Query(format!("rest source: write tmp file: {}", e)))?;
-        }
-        w.flush()
-            .map_err(|e| EngineError::Query(format!("rest source: flush tmp file: {}", e)))?;
+    // Bulk-Vec path. Most REST connectors collect a bounded response
+    // (a single API call's worth of rows) and hand it in here. For
+    // sources that pull millions of rows from a database, use
+    // JsonLinesWriter directly so the rows never collect in RAM.
+    let mut writer = JsonLinesWriter::open(node_id)?;
+    for row in rows {
+        writer.write_row(row)?;
     }
-    let sql = format!(
-        "CREATE OR REPLACE TABLE {} AS SELECT * FROM read_json_auto('{}', format='newline_delimited')",
-        plan::quote_ident(node_id),
-        tmp_path.display().to_string().replace('\\', "/").replace('\'', "''")
-    );
-    rest_source_apply(db, &sql)
+    writer.finalize_into_table(db, node_id)
+}
+
+/// Streaming NDJSON writer used by source loops that don't want to
+/// hold every fetched row in memory at once. A 1 M-row x 37-col
+/// Oracle pull through the Vec path peaks at ~30 GB resident set;
+/// through this writer it's O(64 KiB) regardless of row count.
+///
+/// Usage:
+///   let mut w = JsonLinesWriter::open(&spec.node_id)?;
+///   for row in cursor { w.write_row(&row_as_json)?; }
+///   w.finalize_into_table(db, &spec.node_id)?;
+pub(crate) struct JsonLinesWriter {
+    writer: std::io::BufWriter<std::fs::File>,
+    path: PathBuf,
+}
+
+impl JsonLinesWriter {
+    pub(crate) fn open(node_id: &str) -> Result<Self, EngineError> {
+        let path = unique_rest_tmp_path(node_id);
+        let file = std::fs::File::create(&path)
+            .map_err(|e| EngineError::Query(format!("rest source: create tmp file: {}", e)))?;
+        Ok(Self {
+            writer: std::io::BufWriter::with_capacity(64 * 1024, file),
+            path,
+        })
+    }
+
+    pub(crate) fn write_row(&mut self, row: &JsonValue) -> Result<(), EngineError> {
+        use std::io::Write;
+        serde_json::to_writer(&mut self.writer, row)
+            .map_err(|e| EngineError::Query(format!("rest source: JSON encode: {}", e)))?;
+        self.writer
+            .write_all(b"\n")
+            .map_err(|e| EngineError::Query(format!("rest source: write tmp file: {}", e)))
+    }
+
+    pub(crate) fn finalize_into_table(
+        mut self,
+        db: &Path,
+        node_id: &str,
+    ) -> Result<(), EngineError> {
+        use std::io::Write;
+        self.writer
+            .flush()
+            .map_err(|e| EngineError::Query(format!("rest source: flush tmp file: {}", e)))?;
+        // Drop the buffer (closes file handle) before DuckDB reads it.
+        drop(self.writer);
+        let sql = format!(
+            "CREATE OR REPLACE TABLE {} AS SELECT * FROM read_json_auto('{}', format='newline_delimited')",
+            plan::quote_ident(node_id),
+            self.path
+                .display()
+                .to_string()
+                .replace('\\', "/")
+                .replace('\'', "''")
+        );
+        rest_source_apply(db, &sql)
+    }
 }
 
 /// Unique temp path for a REST/Snowflake/Databricks source's

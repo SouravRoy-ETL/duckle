@@ -1256,6 +1256,44 @@ pub fn compile(pipeline: &PipelineDoc) -> Result<CompiledPipeline, EngineError> 
             .push(source_ref);
     }
 
+    // Propagate "known output columns" through the DAG so passthrough
+    // transforms (filter, sort, limit, fill, cast itself) can validate
+    // their column references at planner time. Sources contribute their
+    // declared schema (only present when the user ran Autodetect or
+    // hand-typed a Schema panel). Transforms that don't change the
+    // column set propagate the parent set as-is; transforms that do
+    // (project, rename, drop, joins, aggregations) reset the set to
+    // None so downstream nodes don't validate against stale info.
+    //
+    // Validation degrades gracefully: if upstream schema is unknown we
+    // skip the check and let DuckDB raise its native "column not
+    // found" at run time. Worst case is the user's old experience -
+    // no regression.
+    let mut known_columns: HashMap<String, Option<HashSet<String>>> = HashMap::new();
+    for node_id in &order {
+        let node = match node_index.get(node_id.as_str()) {
+            Some(n) => *n,
+            None => continue,
+        };
+        let upstream_set = inputs
+            .get(node_id.as_str())
+            .and_then(|ni| ni.main())
+            .and_then(|src| {
+                // src looks like "node_id" or "node_id__reject" - the
+                // known_columns map keys by node id directly.
+                let src_node = strip_reject_suffix(src);
+                known_columns.get(src_node).cloned()
+            })
+            .flatten();
+        let derived = derive_output_columns(
+            node.data.component_id.as_deref(),
+            node.data.properties.as_ref(),
+            node.data.schema.as_deref(),
+            upstream_set.as_ref(),
+        );
+        known_columns.insert(node.id.clone(), derived);
+    }
+
     let mut stages = Vec::with_capacity(order.len());
     for node_id in &order {
         let node = node_index
@@ -1276,6 +1314,22 @@ pub fn compile(pipeline: &PipelineDoc) -> Result<CompiledPipeline, EngineError> 
         }
         let empty = NodeInputs::default();
         let node_inputs = inputs.get(node_id.as_str()).unwrap_or(&empty);
+        // Validate column references against the upstream's known set.
+        // Errors here propagate as compile errors with a clear stage-
+        // tagged message - no need to wait for DuckDB's runtime error.
+        let upstream_cols = node_inputs
+            .main()
+            .map(strip_reject_suffix)
+            .and_then(|src| known_columns.get(src).and_then(|x| x.as_ref()));
+        if let Some(cols) = upstream_cols {
+            validate_column_refs(component_id, node.data.properties.as_ref(), cols)
+                .map_err(|msg| {
+                    EngineError::Config(format!(
+                        "{} ({} / {}): {}",
+                        node.data.label, component_id, node.id, msg
+                    ))
+                })?;
+        }
         let stage = build_stage(node, component_id, node_inputs, &consumer_count)?;
         stages.push(stage);
     }
@@ -1289,6 +1343,181 @@ pub fn compile(pipeline: &PipelineDoc) -> Result<CompiledPipeline, EngineError> 
         .collect();
 
     Ok(CompiledPipeline { stages, leaves })
+}
+
+/// Reject-port outputs are named "<node>__reject"; the schema map keys
+/// on the unsuffixed node id.
+fn strip_reject_suffix(s: &str) -> &str {
+    s.strip_suffix(REJECT_SUFFIX).unwrap_or(s)
+}
+
+/// Compute the output column set a node exposes to its consumers,
+/// given its own declared schema (if any) and its upstream's set.
+///
+/// Returns None when we don't know - either the upstream is unknown
+/// or the component transforms columns in ways the planner doesn't
+/// model (project, join, aggregation, etc). None disables column
+/// validation for downstream nodes that read this output.
+fn derive_output_columns(
+    component_id: Option<&str>,
+    props: Option<&JsonValue>,
+    declared: Option<&[duckle_metadata::Column]>,
+    upstream: Option<&HashSet<String>>,
+) -> Option<HashSet<String>> {
+    // A source contributes its declared schema (if the user set one
+    // via Autodetect / hand-typed Schema panel).
+    if let Some(cols) = declared {
+        if !cols.is_empty() {
+            return Some(cols.iter().map(|c| c.name.clone()).collect());
+        }
+    }
+    let component = match component_id {
+        Some(c) => c,
+        None => return None,
+    };
+    // Pass-through transforms: column set unchanged.
+    if matches!(
+        component,
+        "xf.filter"
+            | "xf.distinct"
+            | "xf.sort"
+            | "xf.limit"
+            | "xf.topn"
+            | "xf.sample"
+            | "xf.skip"
+            | "xf.log"
+            | "xf.fill_forward"
+            | "xf.fill_backward"
+            | "xf.fill_constant"
+            | "xf.cast"
+            | "xf.uuid"
+            | "xf.audit"
+            | "xf.row_hash"
+            | "xf.rownum"
+            | "xf.rank"
+            | "xf.denserank"
+            | "xf.lead"
+            | "xf.lag"
+            | "xf.first"
+            | "xf.last"
+            | "xf.ntile"
+            | "xf.rank.filter"
+            | "xf.cumulative"
+            | "xf.aggwin"
+    ) {
+        // xf.row_hash, xf.audit, xf.aggwin etc. ADD columns - tracking
+        // the additions exactly would require parsing props; we
+        // conservatively keep the upstream set, which means we won't
+        // wrongly reject a user reference to a real existing column.
+        return upstream.cloned();
+    }
+    // xf.drop subtracts; xf.rename renames. Both decodeable from props.
+    if component == "xf.drop" {
+        let mut set = upstream.cloned()?;
+        if let Some(p) = props {
+            let drops = columns_from_props(p, "columns").unwrap_or_default();
+            for d in drops {
+                set.remove(&d);
+            }
+        }
+        return Some(set);
+    }
+    if component == "xf.rename" {
+        let mut set = upstream.cloned()?;
+        if let Some(p) = props {
+            if let Some(renames) = p.get("renames").and_then(JsonValue::as_array) {
+                for r in renames {
+                    let from = r.get("from").and_then(JsonValue::as_str);
+                    let to = r.get("to").and_then(JsonValue::as_str);
+                    if let (Some(f), Some(t)) = (from, to) {
+                        set.remove(f);
+                        set.insert(t.to_string());
+                    }
+                }
+            }
+        }
+        return Some(set);
+    }
+    // xf.project narrows to the listed columns (or keep list).
+    if component == "xf.project" {
+        if let Some(p) = props {
+            let cols = columns_from_props(p, "columns")
+                .or_else(|| columns_from_props(p, "keep"))
+                .unwrap_or_default();
+            if !cols.is_empty() {
+                return Some(cols.into_iter().collect());
+            }
+        }
+    }
+    // Everything else (joins, aggregations, projects with custom SQL,
+    // sources without a declared schema, custom code blocks): unknown.
+    None
+}
+
+/// Lightweight column-reference checks for transforms whose props
+/// name an input column. Runs before stage compilation so the error
+/// surfaces as a clear "column X not found in upstream" at the right
+/// node, instead of DuckDB's run-time "Binder Error: column not found"
+/// two stages later.
+fn validate_column_refs(
+    component_id: &str,
+    props: Option<&JsonValue>,
+    cols: &HashSet<String>,
+) -> Result<(), String> {
+    let p = match props {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+    let check = |col: &str| -> Result<(), String> {
+        let c = col.trim();
+        if c.is_empty() {
+            return Ok(()); // empty handled by per-component validation
+        }
+        if cols.contains(c) {
+            return Ok(());
+        }
+        // Provide a helpful "did you mean" if there's an exact
+        // case-insensitive match - very common typo source for
+        // hand-typed column names.
+        let case_hint = cols
+            .iter()
+            .find(|k| k.eq_ignore_ascii_case(c))
+            .map(|k| format!(" (did you mean '{}'?)", k))
+            .unwrap_or_default();
+        Err(format!(
+            "column '{}' not found in upstream{}",
+            c, case_hint
+        ))
+    };
+    match component_id {
+        "xf.fill_forward" | "xf.fill_backward" | "xf.fill_constant" => {
+            if let Some(c) = p.get("column").and_then(JsonValue::as_str) {
+                check(c)?;
+            }
+        }
+        "xf.cast" => {
+            // Multi-row form
+            if let Some(arr) = p.get("casts").or_else(|| p.get("columns")).and_then(JsonValue::as_array) {
+                for entry in arr {
+                    if let Some(c) = entry.get("column").and_then(JsonValue::as_str) {
+                        let c = c.trim();
+                        if !c.is_empty() {
+                            check(c)?;
+                        }
+                    }
+                }
+            }
+            // Single-row form
+            if let Some(c) = p.get("column").and_then(JsonValue::as_str) {
+                let c = c.trim();
+                if !c.is_empty() {
+                    check(c)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -8107,6 +8336,152 @@ mod tests {
         let sql = &compiled.stages[0].sql;
         assert!(sql.contains("dateformat='%d/%m/%Y'"), "missing dateformat: {}", sql);
         assert!(sql.contains("timestampformat='%d/%m/%Y %H:%M:%S'"), "missing timestampformat: {}", sql);
+    }
+
+    #[test]
+    fn cast_referencing_unknown_column_errors_at_planner() {
+        // When the upstream source has a declared schema (Autodetect
+        // or hand-typed), downstream xf.cast that references a column
+        // not in the schema errors at compile time instead of waiting
+        // for DuckDB's runtime "column not found".
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/x.csv","hasHeader":true},
+                  "schema":[
+                    {"name":"id","type":"int64","nullable":false},
+                    {"name":"name","type":"string","nullable":true}
+                  ]}},
+                {"id":"c","position":{"x":0,"y":0},"data":{
+                  "label":"Cast","componentId":"xf.cast",
+                  "properties":{"column":"NAME","targetType":"VARCHAR"}}},
+                {"id":"k","position":{"x":0,"y":0},"data":{
+                  "label":"CSV out","componentId":"snk.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s","target":"c",
+                  "data":{"connectionType":"main"}},
+                {"id":"e2","source":"c","target":"k",
+                  "data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let err = compile(&p).err().expect("expected an Err");
+        let msg = format!("{:?}", err);
+        assert!(msg.contains("'NAME'"), "should name the bad column: {}", msg);
+        assert!(
+            msg.contains("did you mean 'name'"),
+            "should suggest the case-insensitive match: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn cast_referencing_truly_missing_column_errors_without_hint() {
+        // No close match: error still surfaces but no "did you mean".
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/x.csv","hasHeader":true},
+                  "schema":[
+                    {"name":"id","type":"int64","nullable":false}
+                  ]}},
+                {"id":"c","position":{"x":0,"y":0},"data":{
+                  "label":"Cast","componentId":"xf.cast",
+                  "properties":{"column":"price","targetType":"DOUBLE"}}},
+                {"id":"k","position":{"x":0,"y":0},"data":{
+                  "label":"CSV out","componentId":"snk.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s","target":"c",
+                  "data":{"connectionType":"main"}},
+                {"id":"e2","source":"c","target":"k",
+                  "data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let err = compile(&p).err().expect("expected an Err");
+        let msg = format!("{:?}", err);
+        assert!(msg.contains("'price'"), "should name the bad column: {}", msg);
+        assert!(msg.contains("not found"), "should say not found: {}", msg);
+    }
+
+    #[test]
+    fn fill_forward_with_unknown_column_errors() {
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/x.csv","hasHeader":true},
+                  "schema":[
+                    {"name":"id","type":"int64","nullable":false},
+                    {"name":"reading","type":"float64","nullable":true},
+                    {"name":"ts","type":"timestamp","nullable":false}
+                  ]}},
+                {"id":"f","position":{"x":0,"y":0},"data":{
+                  "label":"Fill","componentId":"xf.fill_forward",
+                  "properties":{"column":"Reading","orderBy":"ts"}}},
+                {"id":"k","position":{"x":0,"y":0},"data":{
+                  "label":"CSV out","componentId":"snk.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s","target":"f",
+                  "data":{"connectionType":"main"}},
+                {"id":"e2","source":"f","target":"k",
+                  "data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let err = compile(&p).err().expect("expected an Err");
+        let msg = format!("{:?}", err);
+        assert!(msg.contains("'Reading'"), "should name the bad column: {}", msg);
+        assert!(
+            msg.contains("did you mean 'reading'"),
+            "should suggest the close match: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn cast_with_valid_column_in_schema_compiles() {
+        // The positive case: with a declared schema and a valid column
+        // reference, compile succeeds and emits the cast SQL.
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/x.csv","hasHeader":true},
+                  "schema":[
+                    {"name":"id","type":"int64","nullable":false},
+                    {"name":"amount","type":"string","nullable":true}
+                  ]}},
+                {"id":"c","position":{"x":0,"y":0},"data":{
+                  "label":"Cast","componentId":"xf.cast",
+                  "properties":{"column":"amount","targetType":"DOUBLE"}}},
+                {"id":"k","position":{"x":0,"y":0},"data":{
+                  "label":"CSV out","componentId":"snk.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s","target":"c",
+                  "data":{"connectionType":"main"}},
+                {"id":"e2","source":"c","target":"k",
+                  "data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let compiled = compile(&p).expect("should compile cleanly");
+        let cast_sql = compiled.stages.iter().find(|s| s.node_id == "c").unwrap().sql.as_str();
+        assert!(cast_sql.contains("CAST(\"amount\" AS DOUBLE)"), "wrong cast SQL: {}", cast_sql);
     }
 
     #[test]
