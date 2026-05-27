@@ -320,6 +320,18 @@ impl DuckdbEngine {
         let mut was_cancelled = false;
         let mut preview: Vec<NodePreview> = Vec::new();
 
+        // Each stage spawns its own duckdb.exe today. A persistent
+        // CLI session per pipeline run would shave ~80% off fixed
+        // per-stage overhead on Windows, but the obvious approach
+        // (pipe stdin + sentinel-SELECT on stdout) doesn't work:
+        // the CLI fully buffers stdout when stdin is a pipe, so the
+        // boundary-marker read blocks forever. Two viable paths:
+        //   1. file-based per-stage marker (each stage writes a
+        //      tiny COPY-to temp file we poll for) instead of
+        //      stdout framing;
+        //   2. drop the CLI subprocess and link the duckdb-rs
+        //      in-process library (same win, no buffering problem,
+        //      ~50 MB linked into the binary).
         for stage in &compiled.stages {
             if self.cancel.load(Ordering::Relaxed) {
                 was_cancelled = true;
@@ -3102,7 +3114,7 @@ impl DuckdbEngine {
         db: &Path,
         spec: &WebhookSourceSpec,
     ) -> Result<String, EngineError> {
-        use std::io::{Read, Write};
+        use std::io::Write;
         use std::net::TcpListener;
         use std::time::{Duration, Instant};
         self.check_cancelled()?;
