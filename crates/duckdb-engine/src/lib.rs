@@ -6944,16 +6944,80 @@ pub fn compile_pipeline_sql(doc: &PipelineDoc) -> Result<Vec<StageSql>, EngineEr
     Ok(compiled
         .stages
         .into_iter()
-        .map(|s| StageSql {
-            node_id: s.node_id,
-            label: s.label,
-            kind: match s.kind {
-                StageKind::Sink => "sink".into(),
-                StageKind::View => "view".into(),
-            },
-            sql: s.sql,
+        .map(|s| {
+            // Driver-backed and control-flow stages carry no DuckDB SQL
+            // (they run in the Duckle runtime via Rust connectors / hooks).
+            // For the SQL export we annotate them so the exported script
+            // reflects the WHOLE pipeline order, not just the parts that
+            // lower to SQL - issue #7.
+            let sql = if s.sql.trim().is_empty() {
+                procedural_note(&s)
+            } else {
+                s.sql
+            };
+            StageSql {
+                node_id: s.node_id,
+                label: s.label,
+                kind: match s.kind {
+                    StageKind::Sink => "sink".into(),
+                    StageKind::View => "view".into(),
+                },
+                sql,
+            }
         })
         .collect())
+}
+
+/// A human-readable comment describing a stage that has no DuckDB SQL
+/// (a driver source/sink or a ctl.* control step). Keeps the SQL export
+/// complete + self-documenting instead of emitting a bare empty stage.
+fn procedural_note(s: &plan::Stage) -> String {
+    let cid = s.component_id.as_str();
+    let body = if let Some(p) = s.run_pipeline_path.as_deref() {
+        format!("control step: runs sub-pipeline '{}' as a side effect", p)
+    } else if let Some(p) = s.iterate_pipeline_path.as_deref() {
+        format!(
+            "control step: runs sub-pipeline '{}' x{} (ctl.iterate)",
+            p,
+            s.iterate_count.unwrap_or(0)
+        )
+    } else if let Some(p) = s.foreach_pipeline_path.as_deref() {
+        format!("control step: runs sub-pipeline '{}' once per upstream row (ctl.foreach)", p)
+    } else if let Some(p) = s.install_fallback_path.as_deref() {
+        format!("control step: installs fallback pipeline '{}' (ctl.try)", p)
+    } else if cid.starts_with("snk.") {
+        match s.from.as_deref() {
+            Some(from) => format!(
+                "sink: '{}' connector writes rows from \"{}\" (runs in the Duckle runtime, no DuckDB SQL)",
+                cid, from
+            ),
+            None => format!(
+                "sink: '{}' connector (runs in the Duckle runtime, no DuckDB SQL)",
+                cid
+            ),
+        }
+    } else if cid.starts_with("src.") {
+        format!(
+            "source: '{}' connector fetches rows and materializes them as \"{}\" (runs in the Duckle runtime, no DuckDB SQL)",
+            cid, s.node_id
+        )
+    } else if cid.starts_with("code.") {
+        format!(
+            "code step: '{}' transforms rows in the Duckle runtime (no DuckDB SQL)",
+            cid
+        )
+    } else if cid.starts_with("xf.ai.") {
+        format!(
+            "AI step: '{}' processes rows in the Duckle runtime (no DuckDB SQL)",
+            cid
+        )
+    } else {
+        format!(
+            "'{}' runs in the Duckle runtime (no DuckDB SQL)",
+            cid
+        )
+    };
+    format!("/* {} */", body)
 }
 
 /// Finalize an XML element being popped from the stack: convert it

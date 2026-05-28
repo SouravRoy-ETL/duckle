@@ -4055,7 +4055,22 @@ fn build_stage(
         // hit that limit when the consumer-count path picks VIEW.
         let uses_dynamic_pivot =
             matches!(component_id, "xf.transpose" | "xf.pivot");
-        let use_view = !has_reject && main_consumers <= 1 && !uses_dynamic_pivot;
+        // DUCKLE_FORCE_VIEWS=1 makes every eligible step a VIEW even when
+        // multiple downstream nodes consume it (issue #5). The default
+        // (single-consumer => VIEW, multi-consumer => TABLE) balances
+        // recompute vs materialize; forcing views trades memory for
+        // re-evaluation, which some users prefer to let DuckDB's
+        // optimizer see the whole query. The hard constraints still
+        // win: a reject port and dynamic PIVOT can never be a view.
+        let force_views = std::env::var("DUCKLE_FORCE_VIEWS")
+            .map(|v| {
+                let v = v.trim();
+                v == "1" || v.eq_ignore_ascii_case("true")
+            })
+            .unwrap_or(false);
+        let use_view = !has_reject
+            && !uses_dynamic_pivot
+            && (force_views || main_consumers <= 1);
         let kind_keyword = if use_view { "VIEW" } else { "TABLE" };
         let mut sql = format!(
             "{}CREATE OR REPLACE {} {} AS {}",
