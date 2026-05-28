@@ -15,6 +15,7 @@ import type { EngineId } from './EngineSelector';
 import type { DuckleNodeData } from '../pipeline-types';
 import type { ComponentDef } from './palette-data';
 import type { ConnectionType } from '../canvas/connection-types';
+import type { RunResult } from '../tauri-bridge';
 
 type TabId = 'canvas' | 'plan' | 'run';
 
@@ -25,6 +26,9 @@ type Props = {
     engine: EngineId;
     nodes: Node<DuckleNodeData>[];
     edges: Edge[];
+    runResult: RunResult | null;
+    isRunning: boolean;
+    nodeLabels: Record<string, string>;
     onNodesChange: (changes: NodeChange[]) => void;
     onEdgesChange: (changes: EdgeChange[]) => void;
     onConnectWithType: (connection: Connection, type: ConnectionType) => void;
@@ -40,9 +44,12 @@ type Props = {
 };
 
 export default function EditorTabs({
-    engine,
+    engine: _engine,
     nodes,
     edges,
+    runResult,
+    isRunning,
+    nodeLabels,
     onNodesChange,
     onEdgesChange,
     onConnectWithType,
@@ -95,10 +102,14 @@ export default function EditorTabs({
                     />
                 </div>
                 <div className={'tab-panel' + (active === 'plan' ? ' tab-panel-active' : '')}>
-                    <PlanView engine={engine} />
+                    <PlanView nodes={nodes} edges={edges} />
                 </div>
                 <div className={'tab-panel' + (active === 'run' ? ' tab-panel-active' : '')}>
-                    <RunView engine={engine} />
+                    <RunView
+                        runResult={runResult}
+                        isRunning={isRunning}
+                        nodeLabels={nodeLabels}
+                    />
                 </div>
             </div>
         </div>

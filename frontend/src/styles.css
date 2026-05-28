@@ -6550,3 +6550,198 @@ html[dir='rtl'] .topbar-lang {
 .ci-badge-mute {
     color: var(--text-3);
 }
+
+/* ---- Plan view (compiled SQL preview tab) ------------------------- */
+.plan-view {
+    height: 100%;
+    overflow: auto;
+    padding: 12px 14px;
+}
+.plan-view-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+.plan-view-count {
+    font-size: 12px;
+    color: var(--text-3);
+}
+.plan-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--text-2);
+    background: var(--bg-2);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    padding: 4px 9px;
+    cursor: pointer;
+}
+.plan-copy-btn:hover {
+    color: var(--text-1);
+    border-color: var(--border-bright);
+}
+.plan-stages {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.plan-stage {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+.plan-stage-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--border);
+}
+.plan-stage-kind {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    background: var(--accent-soft);
+    color: var(--accent-strong);
+}
+.plan-stage-kind-sink {
+    background: rgba(52, 211, 153, 0.14);
+    color: var(--success);
+}
+.plan-stage-label {
+    font-size: 12px;
+    color: var(--text-1);
+    font-weight: 600;
+}
+.plan-stage-id {
+    font-size: 11px;
+    color: var(--text-4);
+    margin-left: auto;
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+}
+.plan-stage-sql {
+    margin: 0;
+    padding: 9px 11px;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text-2);
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+}
+.plan-error {
+    border: 1px solid rgba(255, 77, 109, 0.4);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+.plan-error-title {
+    padding: 7px 11px;
+    background: rgba(255, 77, 109, 0.12);
+    color: var(--danger);
+    font-size: 12px;
+    font-weight: 600;
+}
+.plan-error-body {
+    margin: 0;
+    padding: 9px 11px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    color: var(--text-2);
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+}
+
+/* ---- Run view (last-run results tab) ------------------------------ */
+.run-view {
+    height: 100%;
+    overflow: auto;
+    padding: 12px 14px;
+}
+.run-summary {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+.run-summary-status {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 3px 9px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-2);
+    color: var(--text-2);
+}
+.run-summary-ok .run-summary-status {
+    background: rgba(52, 211, 153, 0.14);
+    color: var(--success);
+}
+.run-summary-error .run-summary-status {
+    background: rgba(255, 77, 109, 0.14);
+    color: var(--danger);
+}
+.run-summary-cancelled .run-summary-status {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-3);
+}
+.run-summary-meta {
+    font-size: 12px;
+    color: var(--text-3);
+}
+.run-error-body {
+    margin: 0 0 10px;
+    padding: 9px 11px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    color: var(--danger);
+    background: rgba(255, 77, 109, 0.08);
+    border: 1px solid rgba(255, 77, 109, 0.3);
+    border-radius: var(--radius-sm);
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+}
+.run-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+.run-table th {
+    text-align: left;
+    padding: 5px 8px;
+    color: var(--text-3);
+    font-weight: 500;
+    border-bottom: 1px solid var(--border);
+}
+.run-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-2);
+    vertical-align: top;
+}
+.run-table .run-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+.run-node-label {
+    color: var(--text-1);
+}
+.run-node-error {
+    margin-top: 3px;
+    font-size: 11px;
+    color: var(--danger);
+    white-space: pre-wrap;
+}
+.run-row-ok {
+    color: var(--success);
+}
+.run-row-err {
+    color: var(--danger);
+}
+.run-row-idle {
+    color: var(--text-4);
+}
