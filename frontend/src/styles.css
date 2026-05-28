@@ -3039,6 +3039,16 @@ html[dir='rtl'] .topbar-lang {
     font-size: 10px;
 }
 
+/* A selected column that is no longer in the upstream schema - shown so
+   the user can uncheck it. Flagged in the danger colour. */
+.field-columns-stale .field-columns-name {
+    color: var(--danger);
+    text-decoration: line-through;
+}
+.field-columns-stale .field-columns-type {
+    color: var(--danger);
+}
+
 /* Aggregations + KV ------------------------------------------------------- */
 .field-aggregations {
     display: flex;
