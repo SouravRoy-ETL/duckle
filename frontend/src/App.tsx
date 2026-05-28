@@ -37,6 +37,7 @@ import GitPanel from './workflow-ui/GitPanel';
 import CiStatusBadge from './workflow-ui/CiStatusBadge';
 import WindowControls from './workflow-ui/WindowControls';
 import { engineStatus } from './tauri-bridge';
+import { copyText, saveTextFile } from './tauri-io';
 import { RunStatusContext } from './canvas/run-status-context';
 import { validatePipeline } from './validation';
 import { resolveForRun } from './run-resolve';
@@ -844,18 +845,6 @@ export default function App() {
 
     const contexts = useMemo(() => repo.filter(r => r.type === 'context'), [repo]);
 
-    const downloadFile = useCallback((filename: string, content: string, mime: string) => {
-        const blob = new Blob([content], { type: mime });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-    }, []);
-
     const buildSqlText = useCallback(async (): Promise<string | null> => {
         const stages = await compilePipelineSql(nodes, edges);
         if (!stages) return null;
@@ -870,21 +859,23 @@ export default function App() {
     const handleCopySql = useCallback(async () => {
         const text = await buildSqlText();
         if (!text) {
-            await navigator.clipboard?.writeText(
+            await copyText(
                 '-- SQL compilation requires the desktop app (cargo run -p duckle-desktop).',
             );
             return;
         }
-        await navigator.clipboard?.writeText(text);
+        await copyText(text);
     }, [buildSqlText]);
 
     const handleExportSql = useCallback(async () => {
         const text = await buildSqlText();
         if (!text) return;
-        downloadFile(`${activeJobName}.sql`, text, 'application/sql');
-    }, [buildSqlText, downloadFile, activeJobName]);
+        await saveTextFile(`${activeJobName}.sql`, text, [
+            { name: 'SQL', extensions: ['sql'] },
+        ]);
+    }, [buildSqlText, activeJobName]);
 
-    const handleExportJson = useCallback(() => {
+    const handleExportJson = useCallback(async () => {
         const payload = {
             version: 1,
             name: activeJobName,
@@ -892,12 +883,12 @@ export default function App() {
             edges,
             exportedAt: new Date().toISOString(),
         };
-        downloadFile(
+        await saveTextFile(
             `${activeJobName}.duckle.json`,
             JSON.stringify(payload, null, 2),
-            'application/json',
+            [{ name: 'Duckle pipeline', extensions: ['json'] }],
         );
-    }, [nodes, edges, activeJobName, downloadFile]);
+    }, [nodes, edges, activeJobName]);
 
     const uniquePipelineName = useCallback(
         (base: string): string => {
@@ -1119,7 +1110,7 @@ export default function App() {
                     break;
 
                 case 'copy-id':
-                    void navigator.clipboard?.writeText(nodeId);
+                    void copyText(nodeId);
                     break;
 
                 case 'delete':
@@ -1547,6 +1538,9 @@ export default function App() {
                         engine={engine}
                         nodes={nodes}
                         edges={edges}
+                        runResult={runResult}
+                        isRunning={isRunning}
+                        nodeLabels={nodeLabels}
                         onNodesChange={handleNodesChange}
                         onEdgesChange={handleEdgesChange}
                         onConnectWithType={handleConnectWithType}

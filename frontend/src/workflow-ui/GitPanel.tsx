@@ -28,6 +28,7 @@ import {
     workspaceGitStatus,
     type GitStatus,
 } from '../tauri-bridge';
+import { openExternal } from '../tauri-io';
 
 type Props = {
     workspacePath: string;
@@ -434,18 +435,19 @@ export default function GitPanel({ workspacePath, onClose }: Props) {
                                 Remove saved PAT
                             </button>
                         )}
-                        <a
+                        <button
+                            type="button"
                             className="git-panel-link"
-                            href={
-                                status.remote?.provider === 'gitlab'
-                                    ? 'https://gitlab.com/-/user_settings/personal_access_tokens'
-                                    : 'https://github.com/settings/tokens?type=beta'
+                            onClick={() =>
+                                void openExternal(
+                                    status.remote?.provider === 'gitlab'
+                                        ? 'https://gitlab.com/-/user_settings/personal_access_tokens'
+                                        : 'https://github.com/settings/tokens?type=beta',
+                                )
                             }
-                            target="_blank"
-                            rel="noreferrer"
                         >
                             Create one <ExternalLink size={10} />
-                        </a>
+                        </button>
                     </Section>
 
                     {error ? <div className="git-panel-error">{error}</div> : null}

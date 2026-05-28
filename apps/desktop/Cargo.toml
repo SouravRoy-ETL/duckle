@@ -23,6 +23,12 @@ tauri-build = { workspace = true }
 tauri = { workspace = true }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
+# Clipboard (Copy SQL / copy node id) and external-URL opening (CI
+# build links, GitHub/GitLab token pages). The browser navigator.clipboard
+# and window.open / <a target=_blank> no-op inside the Tauri webview, so
+# these plugins are the only reliable cross-platform path.
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-opener = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

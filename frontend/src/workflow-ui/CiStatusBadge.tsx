@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { CheckCircle2, CircleDashed, Loader2, XCircle } from 'lucide-react';
 import { workspaceCiStatus, type CiStatus } from '../tauri-bridge';
+import { openExternal } from '../tauri-io';
 
 type Props = {
     workspacePath: string;
@@ -60,7 +61,7 @@ export default function CiStatusBadge({ workspacePath }: Props) {
 
     const handleClick = () => {
         if (status.url) {
-            window.open(status.url, '_blank', 'noopener');
+            void openExternal(status.url);
         }
     };
 
