@@ -789,6 +789,58 @@ fn map_expressions_form_computes() {
 }
 
 #[test]
+fn map_lookup_reference_fails_loud() {
+    // Regression: the Map node only reads its main input and never joins
+    // lookup inputs, but an expression like lookup_1.col used to have its
+    // prefix stripped and silently bind to a main column. It now errors.
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "amount\n100\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("m1", "xf.map", json!({
+                "expressions": [{ "key": "x", "value": "lookup_1.amount * 2" }]
+            })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "m1"), main_edge("e2", "m1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "error", "lookup ref in Map should fail, got {:?}", result.status);
+    assert!(
+        result.error.unwrap_or_default().contains("lookup"),
+        "error should mention the lookup input"
+    );
+}
+
+#[test]
+fn distinct_on_subset_keeps_deterministic_row() {
+    // Regression: DISTINCT ON (key) with no ORDER BY kept an arbitrary
+    // row per group. ORDER BY ALL now makes the kept non-key values the
+    // deterministic per-group minimum.
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "g,v\na,9\na,2\na,5\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("d1", "xf.distinct", json!({ "columns": ["g"] })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "d1"), main_edge("e2", "d1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 1);
+    // The single surviving row for g='a' must be the deterministic min v=2.
+    let v = scalar_string(&format!("SELECT CAST(v AS VARCHAR) FROM read_csv_auto('{}')", out));
+    assert_eq!(v, "2", "DISTINCT ON should keep the deterministic min row, got v={}", v);
+}
+
+#[test]
 fn sink_error_mode_refuses_to_overwrite() {
     let tmp = tempfile::tempdir().unwrap();
     let csv = write_file(tmp.path(), "in.csv", "a\n1\n");

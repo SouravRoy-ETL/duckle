@@ -4561,8 +4561,13 @@ fn build_distinct(inputs: &NodeInputs, props: &JsonValue) -> Result<String, Stri
         Ok(format!("SELECT DISTINCT * FROM {}", quote_ident(upstream)))
     } else {
         let on = cols.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
+        // DISTINCT ON keeps the first row per group in ORDER BY order; with
+        // no ORDER BY the surviving non-key columns are nondeterministic
+        // (worse under preserve_insertion_order=false). ORDER BY ALL breaks
+        // ties across every column, so the kept row is the deterministic
+        // per-group minimum instead of an arbitrary one.
         Ok(format!(
-            "SELECT DISTINCT ON ({}) * FROM {}",
+            "SELECT DISTINCT ON ({}) * FROM {} ORDER BY ALL",
             on,
             quote_ident(upstream)
         ))
@@ -5431,7 +5436,7 @@ fn build_transpose(inputs: &NodeInputs) -> Result<String, String> {
     Ok(format!(
         "SELECT * FROM (PIVOT (FROM (SELECT *, \
          'r' || CAST(ROW_NUMBER() OVER () AS VARCHAR) AS _row FROM {up}) \
-         UNPIVOT (val FOR colname IN (COLUMNS(* EXCLUDE _row)))) \
+         UNPIVOT INCLUDE NULLS (val FOR colname IN (COLUMNS(* EXCLUDE _row)))) \
          ON _row USING first(val) GROUP BY colname)",
         up = quote_ident(upstream)
     ))
@@ -6199,11 +6204,26 @@ fn build_rename(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String
     ))
 }
 
+fn lookup_in_mapper_msg() -> String {
+    "Map: an expression references a lookup input (e.g. lookup_1.col), but the Map node only \
+     reads its main input and does not join lookup inputs - that reference would silently \
+     resolve to the wrong data. Use a Join node to combine the inputs first, then Map over the \
+     joined result."
+        .to_string()
+}
+
 fn build_mapper(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
     let upstream = inputs.main().ok_or_else(|| "mapper: missing main input".to_string())?;
     // The Map form writes `expressions` as key-value pairs:
     // output column name -> SQL expression.
     if let Some(pairs) = props.get("expressions").and_then(JsonValue::as_array) {
+        for kv in pairs {
+            if let Some(expr) = kv.get("value").and_then(JsonValue::as_str) {
+                if references_lookup_port(expr) {
+                    return Err(lookup_in_mapper_msg());
+                }
+            }
+        }
         let terms: Vec<String> = pairs
             .iter()
             .filter_map(|kv| {
@@ -6237,8 +6257,13 @@ fn build_mapper(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String
             .and_then(JsonValue::as_str)
             .unwrap_or("NULL");
         // The visual mapper emits references like `main.col` or
-        // `lookup_1.col`. Those don't exist as DuckDB alias prefixes
-        // in our generated SQL, so we strip them to bare column refs.
+        // `lookup_1.col`. main.* is stripped to a bare column ref; a
+        // lookup reference can't be honored (the Map node never joins
+        // its lookup inputs), so fail loud instead of silently binding
+        // it to a main column or emitting broken SQL.
+        if references_lookup_port(expr_raw) {
+            return Err(lookup_in_mapper_msg());
+        }
         let expr = strip_port_prefixes(expr_raw);
         select_terms.push(format!("{} AS {}", expr, quote_ident(name)));
     }
@@ -6276,6 +6301,24 @@ fn strip_port_prefixes(expr: &str) -> String {
         out.push_str(token);
     }
     out
+}
+
+/// True when an expression references a `lookup` port (e.g.
+/// `lookup_1.col`). The Map node only reads its `main` upstream and
+/// never joins the lookup inputs, so stripping a lookup prefix would
+/// silently bind the reference to a `main` column (wrong data) or fail
+/// with an opaque binder error. Callers fail loud instead. Mirrors
+/// strip_port_prefixes' tokenization so plain columns like
+/// `lookups_total` don't false-positive (requires `lookup...` followed
+/// immediately by a dot).
+fn references_lookup_port(expr: &str) -> bool {
+    for token in expr.split_inclusive(|c: char| !c.is_alphanumeric() && c != '_' && c != '.') {
+        let (alpha, rest) = split_leading_token(token);
+        if !alpha.is_empty() && alpha.starts_with("lookup") && rest.starts_with('.') {
+            return true;
+        }
+    }
+    false
 }
 
 fn split_leading_token(s: &str) -> (&str, &str) {
@@ -7609,7 +7652,7 @@ fn build_dt_bin(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String
     // return TIMESTAMPTZ which then serializes with a timezone offset and
     // round-trips wrong on non-UTC session timezones (tests failed on IST).
     Ok(format!(
-        "SELECT *, CAST({col} AS TIMESTAMP) - (INTERVAL '1 second' * (CAST(epoch(CAST({col} AS TIMESTAMP)) AS BIGINT) % {bucket})) AS {out} FROM {up}",
+        "SELECT *, CAST({col} AS TIMESTAMP) - (INTERVAL '1 second' * (((CAST(epoch(CAST({col} AS TIMESTAMP)) AS BIGINT) % {bucket}) + {bucket}) % {bucket})) AS {out} FROM {up}",
         col = qcol,
         bucket = bucket_seconds,
         out = quote_ident(&output),
