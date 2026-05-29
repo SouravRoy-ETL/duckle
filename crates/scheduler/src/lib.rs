@@ -301,15 +301,23 @@ impl Scheduler {
     async fn fire_due(&self) {
         let now = Utc::now();
         let due: Vec<String> = {
-            let g = self.inner.lock().expect("scheduler poisoned");
-            g.schedules
-                .iter()
-                .filter(|s| {
-                    s.enabled
-                        && matches!(s.next_run_at, Some(t) if t <= now)
-                })
-                .map(|s| s.id.clone())
-                .collect()
+            let mut g = self.inner.lock().expect("scheduler poisoned");
+            let mut due = Vec::new();
+            for s in g.schedules.iter_mut() {
+                if s.enabled && matches!(s.next_run_at, Some(t) if t <= now) {
+                    due.push(s.id.clone());
+                    // Claim the occurrence immediately, under the lock, by
+                    // advancing next_run_at to the next FUTURE time. The
+                    // tick wakes every 15s and run_now only recomputes
+                    // next_run_at on completion (record_run); without this
+                    // claim a run slower than 15s gets re-fired every tick.
+                    // Advancing (vs clearing to None) keeps the schedule
+                    // firing on cadence even if this run errors before
+                    // record_run.
+                    claim_next_run(s, now);
+                }
+            }
+            due
         };
         for id in due {
             let me = self.clone();
@@ -320,6 +328,24 @@ impl Scheduler {
             });
         }
     }
+}
+
+/// Advance next_run_at to the next occurrence strictly after `now`.
+/// Used to "claim" a due schedule at dispatch so the 15s ticker can't
+/// re-fire a still-running schedule. Unlike compute_next_run (which for
+/// intervals is anchored on last_run_at and can still be in the past for
+/// an overdue run), this is always anchored on `now`, guaranteeing a
+/// future time.
+fn claim_next_run(s: &mut Schedule, now: DateTime<Utc>) {
+    s.next_run_at = match &s.kind {
+        ScheduleKind::Cron { expr } => CronSchedule::from_str(expr)
+            .ok()
+            .and_then(|sched| sched.after(&now).next()),
+        ScheduleKind::Interval { seconds } => {
+            Some(now + chrono::Duration::seconds(*seconds as i64))
+        }
+        ScheduleKind::FileWatch { .. } => None,
+    };
 }
 
 fn compute_next_run(s: &mut Schedule) {
