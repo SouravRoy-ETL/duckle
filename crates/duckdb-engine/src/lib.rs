@@ -7954,10 +7954,25 @@ fn pii_patterns(types: &[String]) -> Vec<(regex::Regex, &'static str)> {
         ));
     }
     if want("phone") {
-        // US-ish plus E.164. Won't catch every international format.
+        // US-ish plus E.164. REQUIRES a separator (space/dash) or
+        // parentheses between groups, so a bare run of digits is NOT
+        // treated as a phone. The previous pattern had no separator
+        // requirement and no word boundaries, so it destructively
+        // redacted any 10-digit token (order ids, account numbers,
+        // epoch timestamps) as [REDACTED-PHONE], and partially ate the
+        // digits of long/letter-glued card numbers the credit_card
+        // pattern missed - both contradict the module's documented
+        // "favor false-negatives" design. Won't catch every
+        // international format (intentionally conservative).
+        // No leading \b: a literal "(" has no word boundary before it, so
+        // anchoring there would break the "(415) 555-0100" form. The
+        // separator requirement inside the pattern is what rejects bare
+        // digit runs; the trailing \b keeps it from eating glued suffixes.
         out.push((
-            regex::Regex::new(r"(?:\+?\d{1,3}[ -]?)?(?:\(\d{3}\)|\d{3})[ -]?\d{3}[ -]?\d{4}")
-                .unwrap(),
+            regex::Regex::new(
+                r"(?:\+?\d{1,3}[ -])?(?:\(\d{3}\)[ -]?|\d{3}[ -])\d{3}[ -]\d{4}\b",
+            )
+            .unwrap(),
             "[REDACTED-PHONE]",
         ));
     }
@@ -8226,6 +8241,21 @@ mod tests {
             redact_all("hello world, this is fine"),
             "hello world, this is fine"
         );
+    }
+
+    #[test]
+    fn pii_phone_does_not_eat_bare_digit_runs() {
+        // Regression: the phone pattern used to match any 10-digit run,
+        // destroying order ids / account numbers / timestamps as
+        // [REDACTED-PHONE]. It now requires a separator, so bare digit
+        // runs pass through untouched (favor false-negatives).
+        // 10-digit runs (below the credit_card pattern's 13-19 range) used
+        // to be eaten by phone; they now pass through.
+        assert_eq!(redact_all("order id 1234567890 shipped"), "order id 1234567890 shipped");
+        assert_eq!(redact_all("account 0001234567"), "account 0001234567");
+        // Real, separator-formatted phones are still redacted.
+        assert_eq!(redact_all("ring 415-555-0100 now"), "ring [REDACTED-PHONE] now");
+        assert_eq!(redact_all("intl +1 415 555 0100 ok"), "intl [REDACTED-PHONE] ok");
     }
 
     #[test]
