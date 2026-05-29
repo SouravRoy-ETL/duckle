@@ -1938,34 +1938,62 @@ impl DuckdbEngine {
                 }
                 JsonValue::Null
             }
-            ColumnType::Float4 | ColumnType::Float8 | ColumnType::Floatn => row
-                .try_get::<f64, _>(i)
-                .ok()
-                .flatten()
-                .and_then(|x| serde_json::Number::from_f64(x).map(JsonValue::Number))
-                .unwrap_or(JsonValue::Null),
-            // DECIMAL / NUMERIC / MONEY arrive as tiberius::numeric::Numeric.
-            // Stringify - JSON has no native fixed-point and f64 would lose
-            // the precision that's the whole point of DECIMAL.
-            ColumnType::Decimaln
-            | ColumnType::Numericn
+            // Float8 / FLOAT and MONEY / SMALLMONEY all decode to f64 in
+            // tiberius (money is the scaled integer / 1e4); REAL /
+            // FLOAT(24) decodes to f32, which try_get::<f64> rejects - so
+            // fall back to f32 before giving up. The previous code read
+            // floats as f64 only (REAL -> NULL) and routed MONEY through
+            // the Numeric path (which money is NOT -> NULL).
+            ColumnType::Float4
+            | ColumnType::Float8
+            | ColumnType::Floatn
             | ColumnType::Money
-            | ColumnType::Money4 => row
+            | ColumnType::Money4 => {
+                let v = row.try_get::<f64, _>(i).ok().flatten().or_else(|| {
+                    row.try_get::<f32, _>(i).ok().flatten().map(|x| x as f64)
+                });
+                v.and_then(|x| serde_json::Number::from_f64(x).map(JsonValue::Number))
+                    .unwrap_or(JsonValue::Null)
+            }
+            // DECIMAL / NUMERIC arrive as tiberius::numeric::Numeric.
+            // Stringify (JSON has no fixed-point; f64 would lose the
+            // precision that's the point of DECIMAL) - but format it
+            // ourselves from the unscaled value + scale. Numeric's own
+            // Display signs both the integer and fractional parts, so a
+            // negative like -1.2500 renders as the malformed "-1.-2500".
+            ColumnType::Decimaln | ColumnType::Numericn => row
                 .try_get::<tiberius::numeric::Numeric, _>(i)
                 .ok()
                 .flatten()
-                .map(|n| JsonValue::String(n.to_string()))
+                .map(|n| JsonValue::String(mssql_numeric_to_string(n.value(), n.scale())))
                 .unwrap_or(JsonValue::Null),
             // Date / time / datetime / datetimeoffset all expose a
             // chrono::NaiveDate/NaiveDateTime/DateTime<Utc> via tiberius'
             // optional `time`/`chrono` features. The crate's default
             // path on try_get::<&str>` doesn't work for them, but
             // ToString does - drop to that and emit ISO-shaped strings.
+            // DATETIMEOFFSET is offset-aware: tiberius decodes it to
+            // chrono::DateTime<FixedOffset> (or Utc), NOT a Naive* type, so
+            // the naive probes below would all miss and it became NULL.
+            // Emit an RFC3339 string preserving the original offset.
+            ColumnType::DatetimeOffsetn => {
+                if let Ok(Some(dt)) = row.try_get::<chrono::DateTime<chrono::FixedOffset>, _>(i) {
+                    return JsonValue::String(dt.to_rfc3339());
+                }
+                if let Ok(Some(dt)) = row.try_get::<chrono::DateTime<chrono::Utc>, _>(i) {
+                    return JsonValue::String(dt.to_rfc3339());
+                }
+                return row
+                    .try_get::<&str, _>(i)
+                    .ok()
+                    .flatten()
+                    .map(|s| JsonValue::String(s.to_string()))
+                    .unwrap_or(JsonValue::Null);
+            }
             ColumnType::Datetime
             | ColumnType::Datetime2
             | ColumnType::Datetime4
             | ColumnType::Datetimen
-            | ColumnType::DatetimeOffsetn
             | ColumnType::Daten
             | ColumnType::Timen => {
                 // Tiberius with its `chrono` feature exposes try_get<T>
@@ -2004,12 +2032,16 @@ impl DuckdbEngine {
             // standard 8-4-4-4-12 hex form via its Display impl. If the
             // re-export changes name across versions, fall through to
             // the &str path which Tiberius supports for Guid columns.
-            ColumnType::Guid => {
-                if let Ok(Some(s)) = row.try_get::<&str, _>(i) {
-                    return JsonValue::String(s.to_string());
-                }
-                JsonValue::Null
-            }
+            // GUID: tiberius only provides FromSql for its re-exported
+            // Uuid type (the &str accessor doesn't match a Guid column, so
+            // the old code always returned NULL). Emit the standard
+            // 8-4-4-4-12 hex form.
+            ColumnType::Guid => row
+                .try_get::<tiberius::Uuid, _>(i)
+                .ok()
+                .flatten()
+                .map(|u| JsonValue::String(u.to_string()))
+                .unwrap_or(JsonValue::Null),
             // Everything else (NVarchar / Char / NText / SsVariant / etc):
             // string path. Tiberius' &str accessor handles N* types via
             // UTF-16 -> UTF-8 internally.
@@ -6912,6 +6944,29 @@ fn cql_value_to_json(v: &scylla::frame::response::result::CqlValue) -> JsonValue
 /// - num   -> verbatim
 /// - str   -> 'escaped' (single quotes doubled)
 /// - obj/arr -> PARSE_JSON('escaped json') so it lands in a VARIANT column
+/// Render a SQL Server NUMERIC/DECIMAL as an exact decimal string from
+/// tiberius' unscaled i128 value + scale. tiberius' own Display formats
+/// the integer and fractional parts independently and signs both, so a
+/// negative value like -1.2500 comes out as "-1.-2500". This formats it
+/// correctly with a single leading sign and zero-padded fraction, with no
+/// precision loss.
+fn mssql_numeric_to_string(value: i128, scale: u8) -> String {
+    if scale == 0 {
+        return value.to_string();
+    }
+    let neg = value < 0;
+    let abs = value.unsigned_abs();
+    let pow = 10u128.pow(scale as u32);
+    let int_part = abs / pow;
+    let frac_part = abs % pow;
+    let body = format!("{}.{:0>width$}", int_part, frac_part, width = scale as usize);
+    if neg {
+        format!("-{}", body)
+    } else {
+        body
+    }
+}
+
 fn json_to_sql_literal(v: &JsonValue) -> String {
     match v {
         JsonValue::Null => "NULL".into(),
@@ -8074,9 +8129,22 @@ fn chunk_text(text: &str, size: usize, overlap: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        aws_sigv4_sign, chunk_text, cosine_similarity, glob_match, pii_patterns,
-        read_marker, render_prompt_template, unwrap_dynamodb_attrs, MarkerState,
+        aws_sigv4_sign, chunk_text, cosine_similarity, glob_match, mssql_numeric_to_string,
+        pii_patterns, read_marker, render_prompt_template, unwrap_dynamodb_attrs, MarkerState,
     };
+
+    #[test]
+    fn mssql_numeric_to_string_signs_once() {
+        // tiberius Numeric stores an unscaled i128 value + scale; its own
+        // Display signs both parts (-1.2500 -> "-1.-2500"). Ours must sign
+        // once and zero-pad the fraction.
+        assert_eq!(mssql_numeric_to_string(-12500, 4), "-1.2500");
+        assert_eq!(mssql_numeric_to_string(99999999999, 4), "9999999.9999");
+        assert_eq!(mssql_numeric_to_string(500, 4), "0.0500"); // zero-pad
+        assert_eq!(mssql_numeric_to_string(-5, 2), "-0.05");
+        assert_eq!(mssql_numeric_to_string(42, 0), "42"); // scale 0
+        assert_eq!(mssql_numeric_to_string(0, 4), "0.0000");
+    }
     use serde_json::json;
 
     /// Flatten MarkerState for assertions: None = Pending, Some(r) = Ready(r).
