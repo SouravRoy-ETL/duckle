@@ -989,6 +989,85 @@ fn unpivot_wide_to_long() {
 }
 
 #[test]
+fn unpivot_keeps_null_values() {
+    // Regression: DuckDB UNPIVOT defaults to EXCLUDE NULLS, silently
+    // dropping every row whose unpivoted value is NULL. The builder now
+    // emits INCLUDE NULLS so sparse wide data isn't lost.
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,q1,q2\n1,10,\n2,,20\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("u1", "xf.unpivot", json!({
+                "columns": ["q1", "q2"], "nameColumn": "quarter", "valueColumn": "amount"
+            })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "u1"), main_edge("e2", "u1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    // 2 input rows x 2 unpivoted columns = 4 rows, including the NULL cells.
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 4);
+}
+
+#[test]
+fn window_last_value_spans_partition() {
+    // Regression: LAST_VALUE without an explicit full-partition frame
+    // returns the current row's value (the default RANGE frame ends at
+    // CURRENT ROW), not the partition's last. The builder now appends
+    // ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING.
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "g,ord,amt\na,1,10\na,2,20\na,3,30\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s1", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("w1", "xf.last", json!({
+                "targetColumn": "amt", "partitionBy": ["g"], "orderBy": ["ord"], "outputName": "last_amt"
+            })),
+            node("k1", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s1", "w1"), main_edge("e2", "w1", "k1")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    // Every row of partition 'a' must see the partition's last amt = 30.
+    let vals = scalar_string(&format!(
+        "SELECT string_agg(DISTINCT CAST(last_amt AS VARCHAR), ',') FROM read_csv_auto('{}')",
+        out
+    ));
+    assert_eq!(vals, "30", "last_amt should be 30 for all rows, got {}", vals);
+}
+
+#[test]
+fn base64_roundtrips_non_ascii() {
+    // Regression: encode used CAST(text AS BLOB) which hard-errors on any
+    // non-ASCII byte, and decode used CAST(blob AS VARCHAR) which hex-
+    // escapes (corrupts) non-ASCII. Now uses encode()/decode().
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "word\ncafé\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let engine = engine_or_skip!();
+    let d = doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("e", "xf.text.base64", json!({ "column": "word", "mode": "encode", "outputColumn": "b" })),
+            node("d", "xf.text.base64", json!({ "column": "b", "mode": "decode", "outputColumn": "back" })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "e"), main_edge("e2", "e", "d"), main_edge("e3", "d", "k")]),
+    );
+    let result = engine.execute_pipeline(&d);
+    assert_eq!(result.status, "ok", "run failed: {:?}", result.error);
+    let back = scalar_string(&format!("SELECT back FROM read_csv_auto('{}') LIMIT 1", out));
+    assert_eq!(back, "café", "non-ASCII base64 round-trip corrupted: {}", back);
+}
+
+#[test]
 fn cdc_diff_detect_tags_changes() {
     let engine = engine_or_skip!();
     let tmp = tempfile::tempdir().unwrap();

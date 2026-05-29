@@ -4796,10 +4796,13 @@ fn build_arr_contains(inputs: &NodeInputs, props: &JsonValue) -> Result<String, 
     let upstream = inputs.main().ok_or_else(|| missing_input_msg("xf.arr.contains"))?;
     let column = require_column(props)?;
     let value = string_prop(props, "value").unwrap_or_default();
-    let lit = if value.trim().parse::<f64>().is_ok() {
-        value.trim().to_string()
-    } else {
-        format!("'{}'", sql_escape(&value))
+    // Only emit a bare numeric literal for a FINITE number. Rust's f64
+    // parse also accepts "inf"/"nan"/"infinity"/"1e999"(->inf), none of
+    // which are valid DuckDB numeric tokens - emitting them bare caused a
+    // hard parse/binder error. Treat those as string search values.
+    let lit = match value.trim().parse::<f64>() {
+        Ok(n) if n.is_finite() => value.trim().to_string(),
+        _ => format!("'{}'", sql_escape(&value)),
     };
     // COALESCE wrap: list_contains returns NULL when the array column
     // itself is NULL (not just missing the value). Without this, any
@@ -4917,10 +4920,20 @@ fn build_window(
     let out_name = string_prop(props, "outputName")
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| func.clone());
+    // FIRST_VALUE / LAST_VALUE need an explicit full-partition frame. With
+    // an ORDER BY present (always, above) the default window frame is RANGE
+    // BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW, so LAST_VALUE returns the
+    // CURRENT row's value, not the partition's last - a silent wrong result.
+    // Span the whole partition so "last"/"first" mean what the user picked.
+    let frame = match func.as_str() {
+        "first" | "last" => " ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING",
+        _ => "",
+    };
     Ok(format!(
-        "SELECT *, {} OVER ({}) AS {} FROM {}",
+        "SELECT *, {} OVER ({}{}) AS {} FROM {}",
         call,
         over,
+        frame,
         quote_ident(&out_name),
         quote_ident(upstream)
     ))
@@ -5062,7 +5075,11 @@ fn build_datetime(inputs: &NodeInputs, props: &JsonValue, component_id: &str) ->
     let unit = string_prop(props, "unit").unwrap_or_else(|| "day".into());
     let tz = string_prop(props, "timezone").unwrap_or_default();
     let expr = match component_id {
-        "xf.dt.parse" => format!("strptime(CAST({} AS VARCHAR), '{}')", col, sql_escape(&fmt)),
+        // try_strptime returns NULL on a value that doesn't match the
+        // format, instead of strptime's hard error that aborts the entire
+        // run on the first unparseable row (one bad date killing a whole
+        // pipeline). Matches the TRY_CAST philosophy used elsewhere.
+        "xf.dt.parse" => format!("try_strptime(CAST({} AS VARCHAR), '{}')", col, sql_escape(&fmt)),
         "xf.dt.format" => format!("strftime({}, '{}')", col, sql_escape(&fmt)),
         "xf.dt.extract" => format!("date_part('{}', {})", sql_escape(&unit), col),
         "xf.dt.trunc" => format!("date_trunc('{}', {})", sql_escape(&unit), col),
@@ -5398,34 +5415,55 @@ fn build_transpose(inputs: &NodeInputs) -> Result<String, String> {
 /// because the workspace enables serde_json's preserve_order feature.
 fn build_switch(node_id: &str, inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
     let upstream = inputs.main().ok_or_else(|| missing_input_msg("ctl.switch"))?;
+    // `branches` is a key-value field. The UI saves it as an ARRAY of
+    // {key,value} (which also preserves branch order = case_1, case_2, ...);
+    // older docs may have an object. Accept both, mirroring
+    // headers_from_props. The value is the branch condition; the key is
+    // just the branch label.
     let mut conds: Vec<String> = Vec::new();
-    if let Some(obj) = props.get("branches").and_then(|v| v.as_object()) {
+    let raw = props.get("branches");
+    if let Some(arr) = raw.and_then(|v| v.as_array()) {
+        for item in arr {
+            if let Some(c) = item
+                .get("value")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.trim().is_empty())
+            {
+                conds.push(c.to_string());
+            }
+        }
+    } else if let Some(obj) = raw.and_then(|v| v.as_object()) {
         for (_name, val) in obj {
             if let Some(c) = val.as_str().filter(|s| !s.trim().is_empty()) {
                 conds.push(c.to_string());
             }
-            if conds.len() >= 3 {
-                break;
-            }
         }
     }
+    conds.truncate(3);
     if conds.is_empty() {
         return Err("Switch needs at least one branch condition".to_string());
     }
     let up = quote_ident(upstream);
     let mut stmts: Vec<String> = Vec::new();
     let mut prior: Vec<String> = Vec::new();
+    // Guard every condition with COALESCE(..., FALSE): a row whose
+    // condition evaluates to NULL (e.g. comparing a NULL column) is
+    // neither TRUE for its branch nor caught by the default's NOT(...)
+    // chain (NOT NULL = NULL), so without this it falls through every
+    // case AND the default and is silently lost. COALESCE makes NULL
+    // behave as "did not match", routing the row to the default branch.
     for (i, cond) in conds.iter().enumerate() {
         let case_table = format!("{}__case_{}", node_id, i + 1);
+        let positive = format!("COALESCE(({}), FALSE)", cond);
         let where_clause = if prior.is_empty() {
-            format!("({})", cond)
+            positive
         } else {
             let neg = prior
                 .iter()
-                .map(|p| format!("NOT ({})", p))
+                .map(|p| format!("NOT COALESCE(({}), FALSE)", p))
                 .collect::<Vec<_>>()
                 .join(" AND ");
-            format!("({}) AND {}", cond, neg)
+            format!("{} AND {}", positive, neg)
         };
         stmts.push(format!(
             "CREATE OR REPLACE TABLE {} AS SELECT * FROM {} WHERE {}",
@@ -5435,11 +5473,11 @@ fn build_switch(node_id: &str, inputs: &NodeInputs, props: &JsonValue) -> Result
         ));
         prior.push(cond.clone());
     }
-    // Default: rows that no branch matched.
+    // Default: rows that no branch matched (including NULL-condition rows).
     let default_table = format!("{}__default", node_id);
     let default_where = prior
         .iter()
-        .map(|p| format!("NOT ({})", p))
+        .map(|p| format!("NOT COALESCE(({}), FALSE)", p))
         .collect::<Vec<_>>()
         .join(" AND ");
     stmts.push(format!(
@@ -5618,12 +5656,18 @@ fn build_unpivot(inputs: &NodeInputs, props: &JsonValue) -> Result<String, Strin
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "value".into());
     let on = cols.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
+    // INCLUDE NULLS: DuckDB's UNPIVOT defaults to EXCLUDE NULLS, which
+    // silently drops every row whose unpivoted value is NULL - on sparse
+    // wide data that's real data loss. The SQL-standard form is the only
+    // one that accepts INCLUDE NULLS (the parenthesized statement form
+    // rejects it), so emit that: `... UNPIVOT INCLUDE NULLS (value FOR
+    // name IN (cols))`.
     Ok(format!(
-        "SELECT * FROM (UNPIVOT (SELECT * FROM {}) ON {} INTO NAME {} VALUE {})",
+        "SELECT * FROM {} UNPIVOT INCLUDE NULLS ({} FOR {} IN ({}))",
         quote_ident(upstream),
-        on,
+        quote_ident(&value_col),
         quote_ident(&name_col),
-        quote_ident(&value_col)
+        on
     ))
 }
 
@@ -7019,10 +7063,16 @@ fn build_base64(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String
         .ok_or_else(|| "Base64 needs a column".to_string())?;
     let mode = string_prop(props, "mode").unwrap_or_else(|| "encode".into());
     let qcol = quote_ident(&column);
+    // Use encode()/decode() for the VARCHAR<->BLOB bridge, NOT CAST. CAST
+    // VARCHAR->BLOB hard-errors on any non-ASCII byte ("Invalid byte ... All
+    // non-ascii characters must be escaped"), crashing the whole run; and
+    // CAST BLOB->VARCHAR hex-escapes non-ASCII bytes ("caf\xC3\xA9"),
+    // silently corrupting decoded UTF-8. encode() does a clean UTF-8
+    // VARCHAR->BLOB and decode() a clean BLOB->VARCHAR.
     let expr = if mode == "decode" {
-        format!("CAST(from_base64(CAST({} AS VARCHAR)) AS VARCHAR)", qcol)
+        format!("decode(from_base64(CAST({} AS VARCHAR)))", qcol)
     } else {
-        format!("base64(CAST({} AS BLOB))", qcol)
+        format!("base64(encode({}))", qcol)
     };
     let output = string_prop(props, "outputColumn")
         .filter(|s| !s.is_empty())
@@ -7697,13 +7747,16 @@ fn build_fill_constant(inputs: &NodeInputs, props: &JsonValue) -> Result<String,
     let literal = match props.get("value") {
         Some(JsonValue::String(s)) => {
             let trimmed = s.trim();
-            // If the user typed a bare number (e.g. `0`, `-1.5`), pass
-            // it through unquoted so DuckDB sees a numeric literal.
-            // Otherwise treat it as a string and quote it.
-            if trimmed.parse::<f64>().is_ok() {
-                trimmed.to_string()
-            } else {
-                format!("'{}'", sql_escape(trimmed))
+            // If the user typed a bare FINITE number (e.g. `0`, `-1.5`),
+            // pass it through unquoted so DuckDB sees a numeric literal.
+            // Otherwise quote it as a string. The is_finite guard matters:
+            // Rust's f64 parse also accepts "inf"/"nan"/"infinity"/"1e999",
+            // which are not valid DuckDB numeric tokens and would make the
+            // COALESCE fail - those are almost certainly intended as the
+            // literal string fill value.
+            match trimmed.parse::<f64>() {
+                Ok(n) if n.is_finite() => trimmed.to_string(),
+                _ => format!("'{}'", sql_escape(trimmed)),
             }
         }
         Some(JsonValue::Number(n)) => n.to_string(),
