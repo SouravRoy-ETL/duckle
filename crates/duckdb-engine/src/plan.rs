@@ -6560,19 +6560,27 @@ fn build_csv_source(props: &JsonValue, declared: Option<&[duckle_metadata::Colum
         args.push(format!("timestampformat='{}'", sql_escape(&tf)));
     }
     // If the user declared a schema (Schema panel in PropertiesPanel),
-    // honor it: DuckDB's `columns` argument skips auto-inference for the
-    // listed columns and reads them as the requested type. This is how
-    // a user forces a `dd/mm/yy` date column to stay as VARCHAR instead
-    // of being misparsed as `yyyy-mm-dd`. Without `columns`, read_csv_auto
-    // picks its own types and silently overrides whatever the Schema
-    // panel says. See issue #3.
+    // honor it via DuckDB's `types` argument, which overrides the inferred
+    // type for the NAMED columns and auto-detects the rest. This is how a
+    // user forces a `dd/mm/yy` date column to stay as VARCHAR instead of
+    // being misparsed as `yyyy-mm-dd`. See issue #3.
+    //
+    // `types` (name-match), NOT `columns` (positional full-schema):
+    // `columns` requires the declaration to list EVERY column in the file,
+    // so a PARTIAL Schema-panel declaration (the common case - declare only
+    // the few columns you care about) hard-failed with a cryptic sniffer
+    // "Schema mismatch ... expected N columns" error. `types` accepts a
+    // partial map, binds by NAME, and errors only when a declared name is
+    // genuinely absent from the file (the correct, loud failure).
+    // DuckDB 1.5.3 verified: types={'amt':'VARCHAR'} over a 3-col CSV keeps
+    // id=BIGINT (auto) + amt=VARCHAR (forced); a bogus name errors clearly.
     if let Some(cols) = declared.filter(|c| !c.is_empty()) {
         let pairs = cols
             .iter()
             .map(|c| format!("'{}': '{}'", sql_escape(&c.name), data_type_to_duckdb_sql(&c.data_type)))
             .collect::<Vec<_>>()
             .join(", ");
-        args.push(format!("columns = {{{}}}", pairs));
+        args.push(format!("types = {{{}}}", pairs));
     }
     format!("SELECT * FROM read_csv_auto({})", args.join(", "))
 }
@@ -9039,7 +9047,7 @@ mod tests {
         // Regression for issue #3: when the user sets a column to
         // VARCHAR in the Schema panel (typical fix for dd/mm/yy dates
         // that DuckDB would otherwise misparse as yyyy-mm-dd), the
-        // generated read_csv_auto must include `columns = {...}` so
+        // generated read_csv_auto must include `types = {...}` so
         // DuckDB uses the requested types instead of inferring them.
         let p = pipeline_from_json(
             r#"{
@@ -9064,8 +9072,8 @@ mod tests {
         let compiled = compile(&p).unwrap();
         let src_sql = &compiled.stages[0].sql;
         assert!(
-            src_sql.contains("columns = {"),
-            "missing columns= clause: {}",
+            src_sql.contains("types = {"),
+            "missing types= clause: {}",
             src_sql
         );
         assert!(
@@ -9756,9 +9764,50 @@ mod tests {
         );
         let compiled = compile(&p).unwrap();
         assert!(
-            !compiled.stages[0].sql.contains("columns = {"),
-            "should not emit columns clause without a declared schema: {}",
+            !compiled.stages[0].sql.contains("types = {"),
+            "should not emit types clause without a declared schema: {}",
             compiled.stages[0].sql
+        );
+    }
+
+    #[test]
+    fn csv_partial_declared_schema_uses_types_not_columns() {
+        // Regression (audit B2): a Schema-panel declaration that covers only
+        // SOME of a wider file's columns must emit `types = {...}` (name-
+        // match, partial-ok), NOT `columns = {...}` (positional, requires
+        // the full schema). The old `columns` emission made read_csv_auto
+        // hard-fail with a sniffer arity error for the common "declare just
+        // the column I care about" case.
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/wide.csv","hasHeader":true},
+                  "schema":[
+                    {"name":"amt","type":"string","nullable":true}
+                  ]}},
+                {"id":"k1","position":{"x":0,"y":0},"data":{
+                  "label":"out","componentId":"snk.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s1","target":"k1",
+                  "data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let compiled = compile(&p).unwrap();
+        let src_sql = &compiled.stages[0].sql;
+        assert!(
+            src_sql.contains("types = {") && src_sql.contains("'amt': 'VARCHAR'"),
+            "partial declaration must emit types= with the declared column: {}",
+            src_sql
+        );
+        assert!(
+            !src_sql.contains("columns = {"),
+            "partial declaration must NOT emit columns= (positional, full-schema): {}",
+            src_sql
         );
     }
 
