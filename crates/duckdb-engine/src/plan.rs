@@ -1813,6 +1813,35 @@ fn output_table_ref(source_id: &str, source_handle: Option<&str>) -> String {
     }
 }
 
+/// SQL for a `ctl.*` node that exposes its single upstream unchanged under
+/// its own name (wait, throttle, barrier, checkpoint, runpipeline, iterate,
+/// try, trigger, foreach, gate, ...). Their real effect (delay, sub-pipeline
+/// run, assertion, durable copy) happens in the Rust executor; the SQL is
+/// purely a rename. A VIEW is correct and far cheaper than a TABLE: DuckDB
+/// inlines it into whatever reads it, with no row copy. The old
+/// `CREATE TABLE x AS SELECT * FROM upstream` copied every upstream row to
+/// disk for nothing - ~12s for a 10M-row dataset flowing through a single
+/// control node, versus ~5ms as a view.
+fn passthrough_view_sql(node_id: &str, upstream: &str) -> String {
+    format!(
+        "CREATE OR REPLACE VIEW {} AS SELECT * FROM {}",
+        quote_ident(node_id),
+        quote_ident(upstream)
+    )
+}
+
+/// Empty-result placeholder for a control node used as a pure driver with
+/// no upstream (e.g. `ctl.iterate` running a sub-pipeline N times, or a
+/// `ctl.trigger` with nothing wired in). A view over a constant-false
+/// select is enough; nothing reads its rows.
+fn passthrough_placeholder_sql(node_id: &str, marker: &str) -> String {
+    format!(
+        "CREATE OR REPLACE VIEW {} AS SELECT '{}' AS status WHERE 1=0",
+        quote_ident(node_id),
+        marker.replace('\'', "''")
+    )
+}
+
 fn canonical_port(p: &str) -> &str {
     // Collapse port handle ids to canonical names. The frontend uses
     // 'main', 'lookup_1', 'lookup_2', 'lookup_3', 'reject', 'filter',
@@ -2721,15 +2750,8 @@ fn build_stage(
         iterate_pipeline_path = Some(path);
         iterate_count = Some(count);
         let sql = match inputs.main() {
-            Some(from_view) => format!(
-                "CREATE OR REPLACE TABLE {} AS SELECT * FROM {}",
-                quote_ident(&node.id),
-                quote_ident(from_view)
-            ),
-            None => format!(
-                "CREATE OR REPLACE TABLE {} AS SELECT 'iterated' AS status WHERE 1=0",
-                quote_ident(&node.id)
-            ),
+            Some(from_view) => passthrough_view_sql(&node.id, from_view),
+            None => passthrough_placeholder_sql(&node.id, "iterated"),
         };
         (sql, StageKind::View, None)
     } else if component_id == "ctl.foreach" {
@@ -2744,11 +2766,7 @@ fn build_stage(
             .ok_or_else(|| EngineError::Config(format!("{}: pipelineRef required", component_id)))?;
         let from_view = inputs.main().ok_or_else(|| missing_input(node, "main"))?;
         foreach_pipeline_path = Some(path);
-        let sql = format!(
-            "CREATE OR REPLACE TABLE {} AS SELECT * FROM {}",
-            quote_ident(&node.id),
-            quote_ident(from_view)
-        );
+        let sql = passthrough_view_sql(&node.id, from_view);
         (sql, StageKind::View, Some(from_view.to_string()))
     } else if component_id == "ctl.try" {
         // Side-effect fallback installer: pass through upstream
@@ -2763,15 +2781,8 @@ fn build_stage(
             .ok_or_else(|| EngineError::Config(format!("{}: fallbackPipelineRef (path to a recovery pipeline) required", component_id)))?;
         install_fallback_path = Some(path);
         let sql = match inputs.main() {
-            Some(from_view) => format!(
-                "CREATE OR REPLACE TABLE {} AS SELECT * FROM {}",
-                quote_ident(&node.id),
-                quote_ident(from_view)
-            ),
-            None => format!(
-                "CREATE OR REPLACE TABLE {} AS SELECT 'try-installed' AS status WHERE 1=0",
-                quote_ident(&node.id)
-            ),
+            Some(from_view) => passthrough_view_sql(&node.id, from_view),
+            None => passthrough_placeholder_sql(&node.id, "try-installed"),
         };
         (sql, StageKind::View, None)
     } else if component_id == "ctl.runpipeline" || component_id == "ctl.trigger" {
@@ -2789,18 +2800,11 @@ fn build_stage(
             .ok_or_else(|| EngineError::Config(format!("{}: pipelineRef (path to a pipeline file) required", component_id)))?;
         run_pipeline_path = Some(path);
         // Pass-through view: use main input if present, otherwise
-        // synthesize an empty 0-column table so downstream wiring
-        // still has a target.
+        // synthesize an empty placeholder so downstream wiring still
+        // has a target.
         let sql = match inputs.main() {
-            Some(from_view) => format!(
-                "CREATE OR REPLACE TABLE {} AS SELECT * FROM {}",
-                quote_ident(&node.id),
-                quote_ident(from_view)
-            ),
-            None => format!(
-                "CREATE OR REPLACE TABLE {} AS SELECT 'triggered' AS status WHERE 1=0",
-                quote_ident(&node.id)
-            ),
+            Some(from_view) => passthrough_view_sql(&node.id, from_view),
+            None => passthrough_placeholder_sql(&node.id, "triggered"),
         };
         (sql, StageKind::View, None)
     } else if component_id == "ctl.wait" {
@@ -2818,11 +2822,7 @@ fn build_stage(
         if ms > 0 {
             wait_ms = Some(ms);
         }
-        let sql = format!(
-            "CREATE OR REPLACE TABLE {} AS SELECT * FROM {}",
-            quote_ident(&node.id),
-            quote_ident(from_view)
-        );
+        let sql = passthrough_view_sql(&node.id, from_view);
         (sql, StageKind::View, None)
     } else if component_id == "ctl.throttle" {
         // Same shape as ctl.wait - applies an inter-stage delay derived
@@ -2838,11 +2838,7 @@ fn build_stage(
         if rps > 0.0 {
             wait_ms = Some((1000.0 / rps).max(1.0) as u64);
         }
-        let sql = format!(
-            "CREATE OR REPLACE TABLE {} AS SELECT * FROM {}",
-            quote_ident(&node.id),
-            quote_ident(from_view)
-        );
+        let sql = passthrough_view_sql(&node.id, from_view);
         (sql, StageKind::View, None)
     } else if component_id == "ctl.checkpoint" {
         // Pass-through view + a sidecar parquet write. The temp DB the
@@ -2854,11 +2850,13 @@ fn build_stage(
             .or_else(|| string_prop(&props, "path"))
             .filter(|s| !s.is_empty())
             .ok_or_else(|| EngineError::Config(format!("{}: checkpoint storage path required", component_id)))?;
+        // Pass-through as a view, then write the durable checkpoint
+        // parquet directly from upstream. The view avoids copying every
+        // row into an intermediate table before the COPY reads it again.
         let sql = format!(
-            "CREATE OR REPLACE TABLE {} AS SELECT * FROM {}; COPY (SELECT * FROM {}) TO '{}' (FORMAT PARQUET)",
-            quote_ident(&node.id),
+            "{}; COPY (SELECT * FROM {}) TO '{}' (FORMAT PARQUET)",
+            passthrough_view_sql(&node.id, from_view),
             quote_ident(from_view),
-            quote_ident(&node.id),
             sql_escape(&path)
         );
         (sql, StageKind::View, None)
