@@ -5065,7 +5065,11 @@ fn escape_stray_printf_percents(pattern: &str) -> String {
             i = j + 1;
             continue;
         }
-        while j < bytes.len() && matches!(bytes[j], b'-' | b'+' | b' ' | b'0' | b'#') {
+        // printf flags, EXCLUDING space: a space after % almost always
+        // means a literal percent followed by prose ("50% off"), not the
+        // C space-flag. Including it made "% o"/"% d" in ordinary text
+        // parse as a spec and skip escaping (audit B5 test).
+        while j < bytes.len() && matches!(bytes[j], b'-' | b'+' | b'0' | b'#') {
             j += 1;
         }
         while j < bytes.len() && bytes[j].is_ascii_digit() {
