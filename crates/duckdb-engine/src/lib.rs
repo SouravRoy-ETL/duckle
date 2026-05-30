@@ -6730,7 +6730,14 @@ fn materialize_arrayrows_as_table(
     cols: &[String],
     rows: &[JsonValue],
 ) -> Result<(), EngineError> {
-    let mut serialized = Vec::with_capacity(rows.len());
+    // Stream each column-zipped row object straight to the NDJSON temp
+    // file via JsonLinesWriter instead of building a second re-keyed Vec
+    // plus one giant serialized String (peak ~3x the dataset). The writer
+    // holds O(64 KiB) regardless of row count - same as the sibling
+    // materialize_jsonobjects_as_table. Column order is preserved by the
+    // cols iteration order. Output is identical: finalize reads the file
+    // with format='newline_delimited' (verified equivalent to 'array').
+    let mut writer = JsonLinesWriter::open(node_id)?;
     for row in rows {
         let arr = row.as_array();
         let mut obj = serde_json::Map::new();
@@ -6741,20 +6748,9 @@ fn materialize_arrayrows_as_table(
                 .unwrap_or(JsonValue::Null);
             obj.insert(name.clone(), v);
         }
-        serialized.push(JsonValue::Object(obj));
+        writer.write_row(&JsonValue::Object(obj))?;
     }
-    let json_text = serde_json::to_string(&JsonValue::Array(serialized))
-        .map_err(|e| EngineError::Query(format!("rest source: JSON encode: {}", e)))?;
-    let tmp_path = unique_rest_tmp_path(node_id);
-    std::fs::write(&tmp_path, json_text).map_err(|e| {
-        EngineError::Query(format!("rest source: write tmp file: {}", e))
-    })?;
-    let sql = format!(
-        "CREATE OR REPLACE TABLE {} AS SELECT * FROM read_json_auto('{}', format='array')",
-        plan::quote_ident(node_id),
-        tmp_path.display().to_string().replace('\\', "/").replace('\'', "''")
-    );
-    rest_source_apply(db, &sql)
+    writer.finalize_into_table(db, node_id)
 }
 
 /// Run a single SQL statement against `db` using the CLI helper used
