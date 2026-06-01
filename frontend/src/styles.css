@@ -81,6 +81,12 @@ body,
 #root {
     height: 100%;
     margin: 0;
+    /* Suppress browser edge gestures inside the webview: on a Windows
+       precision touchpad, two-finger pans / edge swipes near the window
+       top, bottom, and sides otherwise trigger overscroll and history
+       navigation, making the UI "react" to trackpad gestures. */
+    overscroll-behavior: none;
+    overflow: hidden;
     background:
         radial-gradient(
             ellipse 800px 400px at 0% 0%,
@@ -122,6 +128,16 @@ input,
 select,
 textarea {
     font-feature-settings: inherit;
+}
+
+/* Native <select> popup options. Without an explicit background the
+   browser draws the dropdown list with the OS default (white) while our
+   light text stays light, so options are invisible in dark mode. Both
+   vars are theme-aware, so this reads correctly in light and dark. */
+select option,
+select optgroup {
+    background: var(--bg-2);
+    color: var(--text-1);
 }
 
 /* Scrollbars (Webkit) */
