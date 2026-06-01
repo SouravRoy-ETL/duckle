@@ -59,6 +59,12 @@ pub struct Column {
     pub nullable: bool,
     #[serde(default, rename = "primaryKey", skip_serializing_if = "Option::is_none")]
     pub primary_key: Option<bool>,
+    /// Optional per-column strptime format (e.g. `%d/%m/%Y`) for DATE /
+    /// TIMESTAMP columns. Lets several date columns each parse with a
+    /// different format on one read (issue #10). None = use the source's
+    /// own / auto-detected parsing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -184,6 +190,7 @@ mod tests {
                     data_type: DataType::Int64,
                     nullable: false,
                     primary_key: Some(true),
+                    format: None,
                 }]),
                 sample_rows: None,
                 disabled: None,
@@ -201,5 +208,22 @@ mod tests {
         assert_eq!(v, "\"int64\"");
         let parsed: DataType = serde_json::from_str("\"timestamp\"").unwrap();
         assert_eq!(parsed, DataType::Timestamp);
+    }
+
+    #[test]
+    fn column_format_round_trips_and_is_optional() {
+        // Issue #10: optional per-column strptime format. A column WITH a
+        // format deserializes and re-serializes the `format` key; a column
+        // WITHOUT one carries None and omits the key (skip_serializing_if).
+        let with: Column =
+            serde_json::from_str(r#"{"name":"d","type":"date","nullable":true,"format":"%d/%m/%Y"}"#)
+                .unwrap();
+        assert_eq!(with.format.as_deref(), Some("%d/%m/%Y"));
+        assert!(serde_json::to_string(&with).unwrap().contains("\"format\":\"%d/%m/%Y\""));
+
+        let without: Column =
+            serde_json::from_str(r#"{"name":"d","type":"date","nullable":true}"#).unwrap();
+        assert_eq!(without.format, None);
+        assert!(!serde_json::to_string(&without).unwrap().contains("format"));
     }
 }

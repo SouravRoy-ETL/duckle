@@ -2152,7 +2152,7 @@ textarea:focus-visible {
 
 .schema-row {
     display: grid;
-    grid-template-columns: 1.4fr 1fr 40px 30px 28px;
+    grid-template-columns: 1.4fr 1fr 1fr 40px 30px 28px;
     gap: 0;
     align-items: center;
     border-bottom: 1px solid var(--border);

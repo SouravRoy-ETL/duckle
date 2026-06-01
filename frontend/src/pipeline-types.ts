@@ -32,6 +32,9 @@ export type Column = {
     type: DataType;
     nullable: boolean;
     primaryKey?: boolean;
+    // Optional strptime format (e.g. %d/%m/%Y) for date/timestamp columns,
+    // so several date columns can each parse a different layout on one read.
+    format?: string;
 };
 
 export type NodeKind = 'source' | 'transform' | 'sink';

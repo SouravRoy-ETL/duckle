@@ -189,6 +189,7 @@ fn inspect_csv(opts: CsvOptions) -> Result<Inspection, InspectError> {
                 data_type: inferred,
                 nullable: column_has_nulls(&samples, idx, null_sentinel.as_deref()),
                 primary_key: None,
+                format: None,
             }
         })
         .collect();

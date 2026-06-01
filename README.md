@@ -211,6 +211,8 @@ Duckle is not a CSV tool with extras. It reads a broad set of formats and source
 | **Desktop** | System clipboard (pure-Rust `arboard`, auto-detects JSON-array shape) | Available |
 | **Repos** | Git (commit log or file tree from a local working copy; shells out to system `git` CLI) | Available |
 
+For CSV / TSV sources, the **Schema** panel accepts an optional per-column **Format** (a `strptime` token string such as `%d/%m/%Y`) on Date and Timestamp columns. Several date columns can each parse a different layout in one read - the column is read as text and re-parsed with its own format, working around DuckDB's single global date format. A value that does not match its format becomes null rather than failing the run.
+
 ### Transforms (126 available)
 
 | Group | Operations |
@@ -274,7 +276,7 @@ Validators split their input: passing rows continue on the main port, failures r
 | **Lakehouse** | Apache Iceberg (full table layout), DuckLake | Available |
 | **Embedded databases** | SQLite, DuckDB | Available |
 | **Network relational DBs** | PostgreSQL, MySQL, MariaDB, CockroachDB - modes: **overwrite**, **append**, **truncate**, **upsert** (ON CONFLICT / ON DUPLICATE KEY) | Available (live CI for PG + MySQL) |
-| **Network relational DBs** | SQL Server / Azure Synapse (TDS, multi-row VALUES batched; auto-creates the table if absent), Oracle (Instant Client; INSERT ALL; auto-creates the table if absent), ClickHouse (HTTP JSONEachRow) | Available |
+| **Network relational DBs** | SQL Server / Azure Synapse (TDS, multi-row VALUES batched; auto-creates the table if absent), Oracle (Instant Client; INSERT ALL, rows per statement capped to stay under Oracle's 999 values-per-statement limit; auto-creates the table if absent), ClickHouse (HTTP JSONEachRow) | Available |
 | **Network relational DBs** | IBM DB2, generic JDBC | Planned |
 | **Object storage** | S3, GCS, Azure Blob via DuckDB `httpfs` (MinIO / R2 / B2 via endpoint) | Available |
 | **Cloud warehouses** | MotherDuck, Snowflake (PAT or JWT RS256), BigQuery, Redshift, Databricks SQL, Azure Synapse, **DuckDB Quack** (concurrent writers to remote DuckDB via the May 2026 protocol) | Available |

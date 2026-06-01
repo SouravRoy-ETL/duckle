@@ -40,6 +40,7 @@ export default function SchemaEditor({ columns, onChange, readOnly = false }: Pr
                 <div className="schema-row schema-header-row">
                     <div className="schema-cell schema-cell-name">Name</div>
                     <div className="schema-cell schema-cell-type">Type</div>
+                    <div className="schema-cell schema-cell-format">Format</div>
                     <div className="schema-cell schema-cell-null">Null</div>
                     <div className="schema-cell schema-cell-pk">PK</div>
                     {!readOnly ? <div className="schema-cell schema-cell-action" /> : null}
@@ -72,6 +73,22 @@ export default function SchemaEditor({ columns, onChange, readOnly = false }: Pr
                                     </option>
                                 ))}
                             </select>
+                        </div>
+                        <div className="schema-cell schema-cell-format">
+                            {c.type === 'date' || c.type === 'timestamp' ? (
+                                <input
+                                    type="text"
+                                    className="schema-input"
+                                    value={c.format ?? ''}
+                                    onChange={e =>
+                                        update(i, { format: e.target.value || undefined })
+                                    }
+                                    disabled={readOnly}
+                                    spellCheck={false}
+                                    placeholder="%d/%m/%Y"
+                                    title="strptime format, e.g. %d/%m/%Y. Leave blank to auto-detect. A wrong format makes unmatched values empty."
+                                />
+                            ) : null}
                         </div>
                         <div className="schema-cell schema-cell-null">
                             <input

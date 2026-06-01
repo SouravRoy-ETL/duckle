@@ -6763,13 +6763,51 @@ fn build_csv_source(props: &JsonValue, declared: Option<&[duckle_metadata::Colum
     // genuinely absent from the file (the correct, loud failure).
     // DuckDB 1.5.3 verified: types={'amt':'VARCHAR'} over a 3-col CSV keeps
     // id=BIGINT (auto) + amt=VARCHAR (forced); a bogus name errors clearly.
+    //
+    // Per-column multi-format workaround (issue #10): DuckDB has only a
+    // single global `dateformat`/`timestampformat`, so to parse several
+    // DATE/TIMESTAMP columns each with its OWN format on one read, force
+    // those columns to VARCHAR in `types=` (raw text) and re-parse each via
+    // try_strptime in a `SELECT * REPLACE (...)` wrap. try_strptime yields
+    // NULL (not an error) on a value the format can't parse.
     if let Some(cols) = declared.filter(|c| !c.is_empty()) {
-        let pairs = cols
-            .iter()
-            .map(|c| format!("'{}': '{}'", sql_escape(&c.name), data_type_to_duckdb_sql(&c.data_type)))
-            .collect::<Vec<_>>()
-            .join(", ");
-        args.push(format!("types = {{{}}}", pairs));
+        use duckle_metadata::DataType;
+        let mut pairs = Vec::with_capacity(cols.len());
+        let mut replaces = Vec::new();
+        for c in cols {
+            let fmt = c.format.as_deref().filter(|s| !s.is_empty());
+            let datey = matches!(c.data_type, DataType::Date | DataType::Timestamp);
+            match (fmt, datey) {
+                (Some(fmt), true) => {
+                    // Read raw, re-parse with the column's own format.
+                    pairs.push(format!("'{}': 'VARCHAR'", sql_escape(&c.name)));
+                    let ident = quote_ident(&c.name);
+                    let cast = match c.data_type {
+                        DataType::Date => "DATE",
+                        _ => "TIMESTAMP",
+                    };
+                    replaces.push(format!(
+                        "try_strptime({id}, '{f}')::{cast} AS {id}",
+                        id = ident,
+                        f = sql_escape(fmt),
+                        cast = cast
+                    ));
+                }
+                _ => pairs.push(format!(
+                    "'{}': '{}'",
+                    sql_escape(&c.name),
+                    data_type_to_duckdb_sql(&c.data_type)
+                )),
+            }
+        }
+        args.push(format!("types = {{{}}}", pairs.join(", ")));
+        if !replaces.is_empty() {
+            return format!(
+                "SELECT * REPLACE ({}) FROM read_csv_auto({})",
+                replaces.join(", "),
+                args.join(", ")
+            );
+        }
     }
     format!("SELECT * FROM read_csv_auto({})", args.join(", "))
 }
@@ -9572,6 +9610,134 @@ mod tests {
     }
 
     #[test]
+    fn csv_per_column_format_wraps_with_try_strptime() {
+        // Issue #10: two date/timestamp columns with DIFFERENT formats on
+        // one read. Each is forced to VARCHAR in types= and re-parsed with
+        // its own format via try_strptime inside a SELECT * REPLACE wrap.
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/d.csv","hasHeader":true},
+                  "schema":[
+                    {"name":"d1","type":"date","format":"%d/%m/%Y"},
+                    {"name":"ts","type":"timestamp","format":"%Y-%m-%d %H:%M:%S"}
+                  ]}},
+                {"id":"k1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV out","componentId":"snk.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s1","target":"k1","data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let compiled = compile(&p).unwrap();
+        let sql = &compiled.stages[0].sql;
+        assert!(sql.contains("SELECT * REPLACE ("), "missing REPLACE wrap: {}", sql);
+        assert!(
+            sql.contains("try_strptime(\"d1\", '%d/%m/%Y')::DATE AS \"d1\""),
+            "missing d1 strptime: {}",
+            sql
+        );
+        assert!(
+            sql.contains("try_strptime(\"ts\", '%Y-%m-%d %H:%M:%S')::TIMESTAMP AS \"ts\""),
+            "missing ts strptime: {}",
+            sql
+        );
+        assert!(sql.contains("'d1': 'VARCHAR'"), "d1 not forced VARCHAR: {}", sql);
+        assert!(sql.contains("'ts': 'VARCHAR'"), "ts not forced VARCHAR: {}", sql);
+        assert!(sql.contains("FROM read_csv_auto("), "missing reader: {}", sql);
+    }
+
+    #[test]
+    fn csv_date_column_without_format_keeps_native_type() {
+        // A DATE column with no format (or empty format) must NOT trigger
+        // the REPLACE wrap; its declared type goes straight into types=.
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/d.csv","hasHeader":true},
+                  "schema":[{"name":"d","type":"date","format":""}]}},
+                {"id":"k1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV out","componentId":"snk.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s1","target":"k1","data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let compiled = compile(&p).unwrap();
+        let sql = &compiled.stages[0].sql;
+        assert!(!sql.contains("REPLACE ("), "should not wrap without format: {}", sql);
+        assert!(sql.contains("'d': 'DATE'"), "date type not preserved: {}", sql);
+    }
+
+    #[test]
+    fn csv_mixed_format_and_plain_columns() {
+        // One formatted date column + one plain int column: only the date
+        // is rewritten; the int keeps its type and is carried through *.
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/d.csv","hasHeader":true},
+                  "schema":[
+                    {"name":"d","type":"date","format":"%d/%m/%Y"},
+                    {"name":"n","type":"int64"}
+                  ]}},
+                {"id":"k1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV out","componentId":"snk.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s1","target":"k1","data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let compiled = compile(&p).unwrap();
+        let sql = &compiled.stages[0].sql;
+        assert!(sql.contains("SELECT * REPLACE ("), "missing REPLACE wrap: {}", sql);
+        assert!(sql.contains("try_strptime(\"d\", '%d/%m/%Y')::DATE AS \"d\""), "missing d: {}", sql);
+        assert!(!sql.contains("\"n\")") && !sql.contains("AS \"n\""), "n should not be rewritten: {}", sql);
+        assert!(sql.contains("'n': 'BIGINT'"), "int type not preserved: {}", sql);
+    }
+
+    #[test]
+    fn csv_per_column_format_quotes_identifier() {
+        // A formatted date column whose name needs quoting: both the
+        // try_strptime arg and the AS alias must be double-quoted.
+        let p = pipeline_from_json(
+            r#"{
+              "nodes": [
+                {"id":"s1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV","componentId":"src.csv",
+                  "properties":{"path":"/tmp/d.csv","hasHeader":true},
+                  "schema":[{"name":"Order Date","type":"date","format":"%d/%m/%Y"}]}},
+                {"id":"k1","position":{"x":0,"y":0},"data":{
+                  "label":"CSV out","componentId":"snk.csv",
+                  "properties":{"path":"/tmp/o.csv","hasHeader":true}}}
+              ],
+              "edges": [
+                {"id":"e1","source":"s1","target":"k1","data":{"connectionType":"main"}}
+              ]
+            }"#,
+        );
+        let compiled = compile(&p).unwrap();
+        let sql = &compiled.stages[0].sql;
+        assert!(
+            sql.contains("try_strptime(\"Order Date\", '%d/%m/%Y')::DATE AS \"Order Date\""),
+            "identifier not quoted: {}",
+            sql
+        );
+    }
+
+    #[test]
     fn cast_referencing_unknown_column_errors_at_planner() {
         // When the upstream source has a declared schema (Autodetect
         // or hand-typed), downstream xf.cast that references a column
@@ -10248,6 +10414,7 @@ mod tests {
             data_type: duckle_metadata::DataType::String,
             nullable: true,
             primary_key: None,
+            format: None,
         }];
         let sql = build_cloud_source(
             "s3",
