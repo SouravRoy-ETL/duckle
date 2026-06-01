@@ -77,6 +77,12 @@ pub fn run() {
             // matter what, so a frontend hiccup can't leave the window
             // stuck invisible.
             if let Some(win) = app.get_webview_window("main") {
+                // Open maximized (fill the work area) on every OS. The
+                // config `maximized: true` is unreliable when the window
+                // starts hidden (visible:false), so maximize explicitly
+                // while it is still hidden - it then reveals already
+                // maximized with no resize flicker.
+                let _ = win.maximize();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(4)).await;
                     let _ = win.show();

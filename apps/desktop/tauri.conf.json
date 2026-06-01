@@ -21,6 +21,7 @@
         "resizable": true,
         "decorations": false,
         "fullscreen": false,
+        "maximized": true,
         "visible": false,
         "backgroundColor": "#07090F",
         "dragDropEnabled": false

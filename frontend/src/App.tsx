@@ -1407,21 +1407,10 @@ export default function App() {
 
     const openJobIds = useMemo(() => new Set(jobs.map(j => j.id)), [jobs]);
 
-    // Double-clicking the title-bar drag region toggles maximize, like a
-    // native window. Use closest() so a double-click anywhere in the drag
-    // region works (the old hasAttribute check only fired on the exact
-    // attributed element, so most of the bar did nothing). Still ignore
-    // double-clicks on interactive controls - buttons, selects, inputs -
-    // even though they sit inside the dragging header.
-    const handleTitlebarDoubleClick = useCallback((e: React.MouseEvent) => {
-        if (!isInTauri()) return;
-        const el = e.target as HTMLElement;
-        if (el.closest('button, select, input, a, [role="button"]')) return;
-        if (!el.closest('[data-tauri-drag-region]')) return;
-        void import('@tauri-apps/api/window').then(m =>
-            m.getCurrentWindow().toggleMaximize(),
-        );
-    }, []);
+    // Note: double-click-to-maximize on the title bar is handled natively
+    // by Tauri's `data-tauri-drag-region`. A custom onDoubleClick handler
+    // here would call toggleMaximize() a SECOND time, so the window
+    // maximized then immediately restored. Do not re-add one.
 
     return (
         <RunStatusContext.Provider value={runResult?.nodes ?? {}}>
@@ -1429,7 +1418,6 @@ export default function App() {
             <header
                 className="topbar"
                 data-tauri-drag-region
-                onDoubleClick={handleTitlebarDoubleClick}
             >
                 <div className="brand" data-tauri-drag-region>
                     <span className="brand-mark" aria-hidden="true">
