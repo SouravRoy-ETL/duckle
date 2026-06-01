@@ -27,7 +27,6 @@ public spaces.
 
 ## Enforcement
 
-Report unacceptable behavior to the maintainer at souravroy7864@gmail.com.
 Reports will be reviewed and handled confidentially. Maintainers may
 remove, edit, or reject contributions, comments, and other interactions
 that violate this Code of Conduct, and may temporarily or permanently ban
