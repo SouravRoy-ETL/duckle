@@ -2141,8 +2141,21 @@ impl DuckdbEngine {
             .map_err(|e| EngineError::Query(format!("adbc: execute: {}", e)))?;
 
         let schema = reader.schema();
-        let parquet_path =
-            std::env::temp_dir().join(format!("duckle-adbc-{}.parquet", spec.node_id));
+        // Key the temp parquet off the run's unique db path (not just the node
+        // id) so concurrent runs of the same pipeline never collide on the
+        // file, and so the run's TempDbGuard can sweep it. A single-consumer
+        // source exposes this file as a lazy VIEW, so it must outlive this
+        // stage; the guard removes all sibling *.adbc-*.parquet at run end.
+        let safe_node: String = spec
+            .node_id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .collect();
+        let db_name = db
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let parquet_path = db.with_file_name(format!("{}.adbc-{}.parquet", db_name, safe_node));
         let file = std::fs::File::create(&parquet_path)
             .map_err(|e| EngineError::Query(format!("adbc: temp parquet: {}", e)))?;
 
@@ -2196,13 +2209,23 @@ impl DuckdbEngine {
             .to_string_lossy()
             .replace('\\', "/")
             .replace('\'', "''");
+        // Single consumer: hand DuckDB a lazy read_parquet VIEW (no table copy;
+        // the consumer pushes projection / predicate into the parquet scan).
+        // The file must survive past this stage, so keep it - the run's
+        // TempDbGuard sweeps all sibling *.adbc-*.parquet at run end. 2+
+        // consumers: materialize a TABLE so the parquet is decoded once, then
+        // drop the temp file right away.
+        let kw = if spec.single_consumer { "VIEW" } else { "TABLE" };
         let create = format!(
-            "CREATE OR REPLACE TABLE {} AS SELECT * FROM read_parquet('{}')",
+            "CREATE OR REPLACE {} {} AS SELECT * FROM read_parquet('{}')",
+            kw,
             plan::quote_ident(&spec.node_id),
             ppath
         );
         self.run(Some(db), &create, false)?;
-        let _ = std::fs::remove_file(&parquet_path);
+        if !spec.single_consumer {
+            let _ = std::fs::remove_file(&parquet_path);
+        }
         Ok(format!("adbc: materialized {} rows into {}", count, spec.node_id))
     }
 
@@ -6664,7 +6687,9 @@ impl DuckdbEngine {
     }
 }
 
-/// Removes the temp run database (and its WAL) when dropped.
+/// Removes the temp run database (and its WAL) when dropped, plus any
+/// `<db>.adbc-*.parquet` temp files that single-consumer src.adbc sources kept
+/// alive as lazy read_parquet VIEWs for the duration of the run.
 struct TempDbGuard(PathBuf);
 impl Drop for TempDbGuard {
     fn drop(&mut self) {
@@ -6672,6 +6697,23 @@ impl Drop for TempDbGuard {
         let mut wal = self.0.clone().into_os_string();
         wal.push(".wal");
         let _ = std::fs::remove_file(PathBuf::from(wal));
+        // Sweep this run's ADBC view parquets (named "<db_file>.adbc-*.parquet"
+        // as a sibling of the run db).
+        if let (Some(dir), Some(db_name)) = (
+            self.0.parent(),
+            self.0.file_name().map(|s| s.to_string_lossy().into_owned()),
+        ) {
+            let prefix = format!("{}.adbc-", db_name);
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if name.starts_with(&prefix) && name.ends_with(".parquet") {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
     }
 }
 

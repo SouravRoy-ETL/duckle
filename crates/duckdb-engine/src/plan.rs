@@ -386,6 +386,11 @@ pub struct AdbcSourceSpec {
     /// ADBC database options (uri, username, password, driver-specific keys).
     pub options: Vec<(String, String)>,
     pub query: String,
+    /// True when at most one downstream stage reads this source. The executor
+    /// then exposes the materialized parquet as a lazy read_parquet VIEW
+    /// (skipping the table copy + enabling projection / predicate pushdown);
+    /// 2+ consumers get a real TABLE so the rows are decoded once.
+    pub single_consumer: bool,
 }
 
 /// snk.redis: SET each input row's keyColumn -> valueColumn into Redis
@@ -3006,12 +3011,22 @@ fn build_stage(
         if let Some(uri) = string_prop(&props, "uri").filter(|s| !s.is_empty()) {
             options.push(("uri".to_string(), uri));
         }
+        // At most one downstream consumer means we can expose the materialized
+        // parquet as a lazy read_parquet VIEW instead of copying it into a
+        // table (skips the table write; lets the consumer push projection /
+        // predicate down into the parquet scan).
+        let single_consumer = consumer_count
+            .get(&output_table_ref(&node.id, None))
+            .copied()
+            .unwrap_or(0)
+            <= 1;
         adbc_source = Some(AdbcSourceSpec {
             node_id: node.id.clone(),
             driver,
             entrypoint: string_prop(&props, "entrypoint").filter(|s| !s.is_empty()),
             options,
             query,
+            single_consumer,
         });
         (String::new(), StageKind::View, None)
     } else if component_id == "src.nats" {
