@@ -9,17 +9,17 @@ import { openExternal } from './tauri-io';
  * browser build or when offline / already current.
  *
  * Preview: a freshly built local binary is newer than the published release, so
- * the banner won't show for real. To review its UI/UX, set
- * `localStorage.setItem('duckle.previewUpdateBanner', '1')` in devtools and
- * reload - it then renders with the real fetched release info if any, otherwise
- * a representative placeholder.
+ * the banner won't show for real. To review its UI/UX, press Ctrl+Shift+U to
+ * force it on (works in release builds, no devtools needed); it renders with
+ * the real fetched release info if any, otherwise a representative placeholder.
  */
 export function UpdateBanner() {
     const [info, setInfo] = useState<UpdateInfo | null>(null);
     const [dismissed, setDismissed] = useState(false);
-    const preview =
+    const [forced, setForced] = useState(
         typeof window !== 'undefined' &&
-        window.localStorage?.getItem('duckle.previewUpdateBanner') === '1';
+            window.localStorage?.getItem('duckle.previewUpdateBanner') === '1',
+    );
 
     useEffect(() => {
         let cancelled = false;
@@ -28,13 +28,25 @@ export function UpdateBanner() {
                 if (!cancelled && r && r.update_available) setInfo(r);
             });
         }, 3000);
+        // Ctrl+Shift+U force-toggles the banner so the upgrade UX can be
+        // reviewed on a local build (newer than any release, so it never fires
+        // for real) without needing devtools.
+        const onKey = (e: KeyboardEvent) => {
+            if (e.ctrlKey && e.shiftKey && (e.key === 'U' || e.key === 'u')) {
+                e.preventDefault();
+                setForced((v) => !v);
+                setDismissed(false);
+            }
+        };
+        window.addEventListener('keydown', onKey);
         return () => {
             cancelled = true;
             clearTimeout(timer);
+            window.removeEventListener('keydown', onKey);
         };
     }, []);
 
-    const show = preview || (info && info.update_available);
+    const show = forced || (info && info.update_available);
     if (!show || dismissed) return null;
 
     const display: UpdateInfo = info ?? {
