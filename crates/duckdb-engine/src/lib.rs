@@ -70,6 +70,12 @@ const PREVIEW_LIMIT: usize = 8;
 /// Rows captured per stage during a run (shown in the node Preview tab).
 const PREVIEW_ROW_LIMIT: usize = 100;
 
+/// Upper bound on input rows for xf.ai.dedupe. The stage compares every row
+/// against all previously-kept rows (O(N^2) cosine), so an unbounded input can
+/// hang the pipeline for minutes. Above this we fail loud with guidance rather
+/// than silently grinding.
+const AI_DEDUPE_MAX_ROWS: usize = 25_000;
+
 /// Drives the downloaded DuckDB CLI. Cheap to clone; holds only the
 /// binary path and a shared cancel flag.
 #[derive(Clone)]
@@ -1413,8 +1419,12 @@ impl DuckdbEngine {
         } else {
             spec.method.to_uppercase()
         };
+        // Reuse one Agent across all dispatches; in row mode this loops once
+        // per row against the same host, so connection pooling avoids a fresh
+        // handshake per row.
+        let agent = ureq::AgentBuilder::new().build();
         let dispatch = |body: String, default_ct: &str| -> Result<(), EngineError> {
-            let mut req = ureq::request(&method, &spec.url);
+            let mut req = agent.request(&method, &spec.url);
             let has_ct = spec
                 .headers
                 .iter()
@@ -1960,7 +1970,7 @@ impl DuckdbEngine {
             "fetch complete: {} rows; materializing into DuckDB",
             count
         ));
-        writer.finalize_into_table(db, &spec.node_id)?;
+        writer.finalize_into_table(&self.bin, db, &spec.node_id)?;
         mark(&format!(
             "materialize complete: {} into {}",
             count, spec.node_id
@@ -2580,7 +2590,7 @@ impl DuckdbEngine {
             })
             .map_err(|e| EngineError::Query(format!("cassandra source: {}", e)))?;
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "cassandra: materialized {} rows into {}",
             count, spec.node_id
@@ -2711,7 +2721,7 @@ impl DuckdbEngine {
             }
         }
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "redis: materialized {} rows into {}",
             count, spec.node_id
@@ -2807,7 +2817,7 @@ impl DuckdbEngine {
             ));
         }
         let count = all_points.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &all_points)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &all_points)?;
         Ok(format!(
             "qdrant: materialized {} points into {}",
             count, spec.node_id
@@ -2912,7 +2922,7 @@ impl DuckdbEngine {
             ));
         }
         let count = all_objects.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &all_objects)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &all_objects)?;
         Ok(format!(
             "weaviate: materialized {} objects into {}",
             count, spec.node_id
@@ -3002,7 +3012,7 @@ impl DuckdbEngine {
             ));
         }
         let count = all_rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &all_rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &all_rows)?;
         Ok(format!(
             "milvus: materialized {} points into {}",
             count, spec.node_id
@@ -3042,7 +3052,7 @@ impl DuckdbEngine {
             other => vec![other],
         };
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "{:?}: materialized {} rows into {}",
             spec.format, count, spec.node_id
@@ -3112,7 +3122,7 @@ impl DuckdbEngine {
             rows.push(j);
         }
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "avro: materialized {} records into {}",
             count, spec.node_id
@@ -3134,7 +3144,7 @@ impl DuckdbEngine {
             .map_err(|e| EngineError::Query(format!("xml: read {}: {}", spec.path, e)))?;
         let rows = walk_xml_to_rows(&content, &spec.row_path, &self.cancel)?;
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "xml: materialized {} rows into {}",
             count, spec.node_id
@@ -3435,7 +3445,7 @@ impl DuckdbEngine {
             Err(e) => return Err(EngineError::Query(format!("rabbit source: {}", e))),
         };
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "rabbit: materialized {} message(s) into {}",
             count, spec.node_id
@@ -3512,7 +3522,7 @@ impl DuckdbEngine {
         };
         self.check_cancelled()?;
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "git ({}): materialized {} row(s) into {}",
             mode, count, spec.node_id
@@ -3633,7 +3643,7 @@ impl DuckdbEngine {
         );
         row.insert("exit_code".into(), JsonValue::from(exit_code));
         row.insert("duration_ms".into(), JsonValue::from(duration_ms));
-        materialize_jsonobjects_as_table(db, &spec.node_id, &[JsonValue::Object(row)])?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &[JsonValue::Object(row)])?;
         Ok(format!(
             "shell: exit {} in {}ms -> {}",
             exit_code, duration_ms, spec.node_id
@@ -3712,7 +3722,7 @@ impl DuckdbEngine {
         }
         let _ = ftp.quit();
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "ftp: materialized {} file(s) from {}:{} into {}",
             count, spec.host, spec.port, spec.node_id
@@ -3737,7 +3747,7 @@ impl DuckdbEngine {
             &format!("SELECT * FROM {};", quote_ident(&spec.from_view)),
         )?;
         if rows.is_empty() {
-            materialize_jsonobjects_as_table(db, &spec.node_id, &[])?;
+            materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &[])?;
             return Ok(format!(
                 "ai.embed: 0 upstream rows -> {}",
                 spec.node_id
@@ -3810,7 +3820,7 @@ impl DuckdbEngine {
             }
         }
         let count = out.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &out)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &out)?;
         Ok(format!(
             "ai.embed ({}): embedded {} row(s) into {}",
             spec.model, count, spec.node_id
@@ -3980,7 +3990,7 @@ impl DuckdbEngine {
             polls += 1;
         }
         let count = out.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &out)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &out)?;
         Ok(format!(
             "kinesis: read {} record(s) from {}/shard[{}] -> {}",
             count, spec.stream_name, spec.shard_index, spec.node_id
@@ -4091,7 +4101,7 @@ impl DuckdbEngine {
             ));
         }
         let count = all_rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &all_rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &all_rows)?;
         Ok(format!(
             "dynamodb: scanned {} row(s) from {} ({} page(s)) -> {}",
             count, spec.table_name, pages, spec.node_id
@@ -4257,7 +4267,7 @@ impl DuckdbEngine {
             }
         }
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "webhook: collected {} request(s) on :{} -> {}",
             count, spec.port, spec.node_id
@@ -4292,7 +4302,7 @@ impl DuckdbEngine {
         let total = mailbox.exists as u64;
         if total == 0 {
             let _ = session.logout();
-            materialize_jsonobjects_as_table(db, &spec.node_id, &[])?;
+            materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &[])?;
             return Ok(format!(
                 "email: 0 messages in {} -> {}",
                 spec.mailbox, spec.node_id
@@ -4347,7 +4357,7 @@ impl DuckdbEngine {
         }
         let _ = session.logout();
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "email: materialized {} message(s) from {}@{}:{}/{} into {}",
             count, spec.user, spec.host, spec.port, spec.mailbox, spec.node_id
@@ -4372,7 +4382,7 @@ impl DuckdbEngine {
             &format!("SELECT * FROM {};", quote_ident(&spec.from_view)),
         )?;
         if rows.is_empty() {
-            materialize_jsonobjects_as_table(db, &spec.node_id, &[])?;
+            materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &[])?;
             return Ok(format!(
                 "code.javascript: 0 upstream rows -> {}",
                 spec.node_id
@@ -4428,7 +4438,7 @@ impl DuckdbEngine {
             out.push(json_out);
         }
         let count = out.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &out)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &out)?;
         Ok(format!(
             "code.javascript: transformed {} row(s) into {}",
             count, spec.node_id
@@ -4438,14 +4448,23 @@ impl DuckdbEngine {
     /// xf.ai.dedupe: drop rows whose embedding is within `threshold`
     /// cosine similarity of a previously-kept row. Reads the
     /// embedding column as a list of floats from each row. No API
-    /// call - pure local math. O(N^2) per stage which is fine for
-    /// ETL-scale datasets (low thousands of rows).
+    /// call - pure local math. O(N^2) per stage, so the input is
+    /// capped at AI_DEDUPE_MAX_ROWS and exceeding it fails loud.
     fn run_ai_dedupe(&self, db: &Path, spec: &AiDedupeSpec) -> Result<String, EngineError> {
         self.check_cancelled()?;
         let rows = self.run_rows(
             Some(db),
             &format!("SELECT * FROM {};", quote_ident(&spec.from_view)),
         )?;
+        if rows.len() > AI_DEDUPE_MAX_ROWS {
+            return Err(EngineError::Config(format!(
+                "ai.dedupe compares every row against all kept rows (O(N^2)); {} input rows \
+                 exceeds the {} row limit. Pre-filter or aggregate upstream, or split the \
+                 input before semantic dedupe.",
+                rows.len(),
+                AI_DEDUPE_MAX_ROWS
+            )));
+        }
         let mut kept: Vec<JsonValue> = Vec::new();
         let mut kept_embeddings: Vec<Vec<f64>> = Vec::new();
         for row in rows.iter() {
@@ -4483,7 +4502,7 @@ impl DuckdbEngine {
             }
         }
         let count = kept.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &kept)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &kept)?;
         Ok(format!(
             "ai.dedupe: {} -> {} row(s) (threshold {}) into {}",
             rows.len(),
@@ -4508,7 +4527,7 @@ impl DuckdbEngine {
             &format!("SELECT * FROM {};", quote_ident(&spec.from_view)),
         )?;
         if rows.is_empty() {
-            materialize_jsonobjects_as_table(db, &spec.node_id, &[])?;
+            materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &[])?;
             return Ok(format!("ai.classify: 0 upstream rows -> {}", spec.node_id));
         }
         let endpoint = format!("{}/v1/chat/completions", spec.base_url.trim_end_matches('/'));
@@ -4573,7 +4592,7 @@ impl DuckdbEngine {
             out.push(JsonValue::Object(obj));
         }
         let count = out.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &out)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &out)?;
         Ok(format!(
             "ai.classify ({}): {} row(s) -> {}",
             spec.model, count, spec.node_id
@@ -4597,7 +4616,7 @@ impl DuckdbEngine {
             &format!("SELECT * FROM {};", quote_ident(&spec.from_view)),
         )?;
         if rows.is_empty() {
-            materialize_jsonobjects_as_table(db, &spec.node_id, &[])?;
+            materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &[])?;
             return Ok(format!("ai.llm: 0 upstream rows -> {}", spec.node_id));
         }
         let endpoint = format!("{}/v1/chat/completions", spec.base_url.trim_end_matches('/'));
@@ -4651,7 +4670,7 @@ impl DuckdbEngine {
             out.push(JsonValue::Object(obj));
         }
         let count = out.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &out)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &out)?;
         Ok(format!(
             "ai.llm ({}): {} row(s) -> {}",
             spec.model, count, spec.node_id
@@ -4694,7 +4713,7 @@ impl DuckdbEngine {
             out.push(JsonValue::Object(obj));
         }
         let count = out.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &out)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &out)?;
         Ok(format!(
             "ai.pii: redacted {} row(s) into {}",
             count, spec.node_id
@@ -4751,7 +4770,7 @@ impl DuckdbEngine {
             }
         }
         let count = out.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &out)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &out)?;
         Ok(format!(
             "ai.chunk: split {} upstream row(s) into {} chunk(s) -> {}",
             rows.len(),
@@ -4766,10 +4785,13 @@ impl DuckdbEngine {
     /// function (i32, i32) -> i64, then reads the (out_ptr, out_len)
     /// pair back from the returned i64 to recover the result string.
     ///
-    /// Each row gets a fresh module instance so state doesn't leak
-    /// between rows - safer for user-supplied modules. wasmi is an
-    /// interpreter so each call has interpretation overhead; for ETL
-    /// (rows in the thousands, not millions per second) it's fine.
+    /// By default each row gets a fresh module instance so state
+    /// doesn't leak between rows - safer for user-supplied modules. When
+    /// spec.reuse_instance is set the stage instantiates once and reuses
+    /// that instance across every row (faster, but linear memory persists
+    /// between rows). wasmi is an interpreter so each call has
+    /// interpretation overhead; for ETL (rows in the thousands, not
+    /// millions per second) it's fine.
     ///
     /// Modules run sandboxed: no host imports, no fs, no network. If
     /// the module's exports don't match the contract we return a
@@ -4781,12 +4803,18 @@ impl DuckdbEngine {
             &format!("SELECT * FROM {};", quote_ident(&spec.from_view)),
         )?;
         if rows.is_empty() {
-            materialize_jsonobjects_as_table(db, &spec.node_id, &[])?;
+            materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &[])?;
             return Ok(format!("wasm: 0 upstream rows -> {}", spec.node_id));
         }
         let engine = wasmi::Engine::default();
         let module = wasmi::Module::new(&engine, &spec.wasm_bytes[..])
             .map_err(|e| EngineError::Query(format!("wasm: parse module: {}", e)))?;
+        // Per-stage mode: build one instance up front and reuse it.
+        let mut shared = if spec.reuse_instance {
+            Some(Self::wasm_new_instance(&engine, &module, &spec.function)?)
+        } else {
+            None
+        };
         let mut out: Vec<JsonValue> = Vec::with_capacity(rows.len());
         for row in rows.iter() {
             self.check_cancelled()?;
@@ -4795,7 +4823,16 @@ impl DuckdbEngine {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let result_text = self.invoke_wasm_transform(&engine, &module, &spec.function, &input_text)?;
+            let result_text = match shared.as_mut() {
+                Some((store, memory, transform)) => {
+                    Self::wasm_run_one(store, *memory, *transform, &input_text)?
+                }
+                None => {
+                    let (mut store, memory, transform) =
+                        Self::wasm_new_instance(&engine, &module, &spec.function)?;
+                    Self::wasm_run_one(&mut store, memory, transform, &input_text)?
+                }
+            };
             let mut obj = match row {
                 JsonValue::Object(m) => m.clone(),
                 _ => serde_json::Map::new(),
@@ -4807,23 +4844,30 @@ impl DuckdbEngine {
             out.push(JsonValue::Object(obj));
         }
         let count = out.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &out)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &out)?;
         Ok(format!(
             "wasm ({}): processed {} row(s) into {}",
             spec.function, count, spec.node_id
         ))
     }
 
-    /// Run a single transform invocation against a fresh module
-    /// instance. Returns the output string read back from module
-    /// memory. Pulled out so the per-row loop stays compact.
-    fn invoke_wasm_transform(
-        &self,
+    /// Instantiate the module and resolve its `memory` export plus the
+    /// transform function. Memory/TypedFunc are lightweight store-independent
+    /// handles (Copy), so the caller can hold them and drive many calls
+    /// against the returned store.
+    #[allow(clippy::type_complexity)]
+    fn wasm_new_instance(
         engine: &wasmi::Engine,
         module: &wasmi::Module,
         function: &str,
-        input: &str,
-    ) -> Result<String, EngineError> {
+    ) -> Result<
+        (
+            wasmi::Store<()>,
+            wasmi::Memory,
+            wasmi::TypedFunc<(i32, i32), i64>,
+        ),
+        EngineError,
+    > {
         let mut store = wasmi::Store::new(engine, ());
         let linker = wasmi::Linker::new(engine);
         let instance = linker
@@ -4841,22 +4885,33 @@ impl DuckdbEngine {
                     function, e
                 ))
             })?;
+        Ok((store, memory, transform))
+    }
+
+    /// Run a single transform invocation against an existing instance.
+    /// Returns the output string read back from module memory.
+    fn wasm_run_one(
+        store: &mut wasmi::Store<()>,
+        memory: wasmi::Memory,
+        transform: wasmi::TypedFunc<(i32, i32), i64>,
+        input: &str,
+    ) -> Result<String, EngineError> {
         // Write input at a fixed offset (1024). Modules that want
         // dynamic alloc can ignore this offset and use their own
         // allocator - we still pass our offset as in_ptr.
         let in_ptr: u32 = 1024;
         let in_len: u32 = input.len() as u32;
         memory
-            .data_mut(&mut store)
+            .data_mut(&mut *store)
             .get_mut(in_ptr as usize..(in_ptr + in_len) as usize)
             .ok_or_else(|| EngineError::Query("wasm: input doesn't fit in memory".into()))?
             .copy_from_slice(input.as_bytes());
         let packed = transform
-            .call(&mut store, (in_ptr as i32, in_len as i32))
-            .map_err(|e| EngineError::Query(format!("wasm: call {}: {}", function, e)))?;
+            .call(&mut *store, (in_ptr as i32, in_len as i32))
+            .map_err(|e| EngineError::Query(format!("wasm: call: {}", e)))?;
         let out_ptr = ((packed >> 32) & 0xFFFFFFFF) as u32;
         let out_len = (packed & 0xFFFFFFFF) as u32;
-        let mem_data = memory.data(&store);
+        let mem_data = memory.data(&*store);
         let out_slice = mem_data
             .get(out_ptr as usize..(out_ptr + out_len) as usize)
             .ok_or_else(|| {
@@ -4900,7 +4955,7 @@ impl DuckdbEngine {
             }
         };
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "clipboard: materialized {} row(s) into {}",
             count, spec.node_id
@@ -5032,7 +5087,7 @@ impl DuckdbEngine {
             Err(e) => return Err(EngineError::Query(format!("nats source: {}", e))),
         };
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "nats: materialized {} message(s) into {}",
             count, spec.node_id
@@ -5182,7 +5237,7 @@ impl DuckdbEngine {
                 .send_string(&serde_json::to_string(&ack_body).unwrap_or_default());
         }
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "pubsub: materialized {} message(s) into {}",
             count, spec.node_id
@@ -5361,7 +5416,7 @@ impl DuckdbEngine {
             Err(e) => return Err(EngineError::Query(format!("kafka source: {}", e))),
         };
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "kafka: materialized {} record(s) into {}",
             count, spec.node_id
@@ -5531,6 +5586,9 @@ impl DuckdbEngine {
         // pull that's two large allocations alive at once; now neither
         // exists - rows pass through tiberius -> writer immediately.
         let writer = JsonLinesWriter::open(&spec.node_id)?;
+        // &Path is Copy; capture it for the async block (block_on is scoped,
+        // so this never outlives &self).
+        let bin = self.binary();
         let count: usize = rt
             .block_on(async move {
                 use futures_util::TryStreamExt;
@@ -5580,7 +5638,7 @@ impl DuckdbEngine {
                     count += 1;
                 }
                 writer
-                    .finalize_into_table(db, &spec.node_id)
+                    .finalize_into_table(bin, db, &spec.node_id)
                     .map_err(|e| format!("finalize: {}", e))?;
                 Ok::<usize, String>(count)
             })
@@ -5715,7 +5773,7 @@ impl DuckdbEngine {
             .cloned()
             .unwrap_or_default();
         let count = rows.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "clickhouse: materialized {} rows into {}",
             count, spec.node_id
@@ -5840,7 +5898,7 @@ impl DuckdbEngine {
             .filter_map(|d| serde_json::to_value(d).ok())
             .collect();
         let count = json_docs.len();
-        materialize_jsonobjects_as_table(db, &spec.node_id, &json_docs)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &json_docs)?;
         Ok(format!(
             "mongodb: materialized {} docs into {}",
             count, spec.node_id
@@ -5993,7 +6051,7 @@ impl DuckdbEngine {
                 spec.max_pages,
             ));
         }
-        materialize_jsonobjects_as_table(db, &spec.node_id, &all_rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &all_rows)?;
         Ok(format!(
             "elastic: materialized {} rows ({} page(s), {}) into {}",
             all_rows.len(),
@@ -6028,10 +6086,14 @@ impl DuckdbEngine {
             RestPagination::Page { start_page, .. } => *start_page,
             _ => 1,
         };
+        // One Agent for the whole pagination walk so keep-alive connections
+        // are reused across pages instead of a fresh TCP+TLS handshake each
+        // request (ureq::request uses a throwaway agent per call).
+        let agent = ureq::AgentBuilder::new().build();
         loop {
             self.check_cancelled()?;
             // Build request
-            let mut req = ureq::request(&spec.method, &url);
+            let mut req = agent.request(&spec.method, &url);
             let has_ct = spec
                 .headers
                 .iter()
@@ -6185,7 +6247,7 @@ impl DuckdbEngine {
                 spec.max_pages,
             ));
         }
-        materialize_jsonobjects_as_table(db, &spec.node_id, &all_rows)?;
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &all_rows)?;
         Ok(format!(
             "rest: materialized {} rows ({} page(s)) into {}",
             all_rows.len(),
@@ -6349,7 +6411,7 @@ impl DuckdbEngine {
         // Pretend warning to silence "response variable unused after
         // reassignment" if all_data didn't grow.
         let _ = &mut response;
-        materialize_arrayrows_as_table(db, &spec.node_id, &cols, &all_data)?;
+        materialize_arrayrows_as_table(&self.bin, db, &spec.node_id, &cols, &all_data)?;
         Ok(format!(
             "snowflake: materialized {} rows ({} partition(s)) into {}",
             all_data.len(),
@@ -6476,7 +6538,7 @@ impl DuckdbEngine {
                 .and_then(|v| v.as_str())
                 .map(String::from);
         }
-        materialize_arrayrows_as_table(db, &spec.node_id, &cols, &all_data)?;
+        materialize_arrayrows_as_table(&self.bin, db, &spec.node_id, &cols, &all_data)?;
         Ok(format!(
             "databricks: materialized {} rows ({} chunk(s)) into {}",
             all_data.len(),
@@ -7015,6 +7077,7 @@ fn urlencode_simple(s: &str) -> String {
 /// Variant of materialize_arrayrows_as_table for sources whose
 /// response is already object-shaped (no column zipping needed).
 fn materialize_jsonobjects_as_table(
+    bin: &Path,
     db: &Path,
     node_id: &str,
     rows: &[JsonValue],
@@ -7027,7 +7090,7 @@ fn materialize_jsonobjects_as_table(
     for row in rows {
         writer.write_row(row)?;
     }
-    writer.finalize_into_table(db, node_id)
+    writer.finalize_into_table(bin, db, node_id)
 }
 
 /// Streaming NDJSON writer used by source loops that don't want to
@@ -7066,6 +7129,7 @@ impl JsonLinesWriter {
 
     pub(crate) fn finalize_into_table(
         mut self,
+        bin: &Path,
         db: &Path,
         node_id: &str,
     ) -> Result<(), EngineError> {
@@ -7084,7 +7148,7 @@ impl JsonLinesWriter {
                 .replace('\\', "/")
                 .replace('\'', "''")
         );
-        rest_source_apply(db, &sql)
+        apply_duckdb_sql(bin, db, &sql)
     }
 }
 
@@ -7115,6 +7179,7 @@ fn unique_rest_tmp_path(node_id: &str) -> PathBuf {
 /// the types from the JSON content - good enough for downstream
 /// stages to read the result like any other source.
 fn materialize_arrayrows_as_table(
+    bin: &Path,
     db: &Path,
     node_id: &str,
     cols: &[String],
@@ -7140,18 +7205,17 @@ fn materialize_arrayrows_as_table(
         }
         writer.write_row(&JsonValue::Object(obj))?;
     }
-    writer.finalize_into_table(db, node_id)
+    writer.finalize_into_table(bin, db, node_id)
 }
 
-/// Run a single SQL statement against `db` using the CLI helper used
-/// elsewhere. Tiny shim used by materialize_arrayrows_as_table to
-/// avoid plumbing &self through the free helper.
-fn rest_source_apply(db: &Path, sql: &str) -> Result<(), EngineError> {
+/// Run a single SQL statement against `db` using the engine's own DuckDB
+/// binary. `bin` is threaded down from `&self.bin` so this never depends on
+/// the DUCKLE_DUCKDB_BIN environment variable being set - the engine can be
+/// constructed with a valid binary and still materialize results even when
+/// the process env is empty (tests, embedded hosts).
+fn apply_duckdb_sql(bin: &Path, db: &Path, sql: &str) -> Result<(), EngineError> {
     use std::process::Command;
-    let binary = std::env::var("DUCKLE_DUCKDB_BIN").map_err(|_| {
-        EngineError::Config("DUCKLE_DUCKDB_BIN not set (engine couldn't run rest source materialize)".into())
-    })?;
-    let output = Command::new(&binary)
+    let output = Command::new(bin)
         .arg(db.to_string_lossy().to_string())
         .arg("-c")
         .arg(sql)

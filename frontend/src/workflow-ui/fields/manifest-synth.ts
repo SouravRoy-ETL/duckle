@@ -3464,7 +3464,10 @@ function synthCustomCode(comp: ComponentDef): ComponentManifest {
                 { key: 'code', label: 'Source', kind: 'textarea', rows: 12, monospace: true, required: true,
                   placeholder: id === 'code.python' ? 'def process(row):\n    return row' : '// custom code' },
                 ...(id === 'code.wasm' ? [{ key: 'wasmPath', label: 'WASM file', kind: 'file-path' as const,
-                    filters: [{ name: 'WebAssembly', extensions: ['wasm'] }] }] : []),
+                    filters: [{ name: 'WebAssembly', extensions: ['wasm'] }] },
+                  { key: 'reuseInstance', label: 'Reuse module instance across rows', kind: 'bool' as const,
+                    defaultValue: false,
+                    placeholder: 'Faster, but module memory/state persists between rows (default: fresh instance per row)' }] : []),
             ],
         },
     ], 'declared');

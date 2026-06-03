@@ -864,6 +864,11 @@ pub struct WasmSpec {
     pub input_column: String,
     pub output_column: String,
     pub function: String,
+    /// When true, one module instance is reused across all rows (faster, but
+    /// linear memory persists between rows). Default false gives a fresh
+    /// instance per row so module state cannot leak - safer for untrusted
+    /// modules.
+    pub reuse_instance: bool,
 }
 
 /// code.javascript: per-row JS transform via boa_engine (pure-Rust
@@ -3966,6 +3971,10 @@ fn build_stage(
             function: string_prop(&props, "function")
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "transform".into()),
+            reuse_instance: props
+                .get("reuseInstance")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
         });
         (String::new(), StageKind::View, None)
     } else if component_id == "xf.ai.pii" {
