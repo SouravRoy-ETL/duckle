@@ -3369,7 +3369,9 @@ function synthPipelineControl(comp: ComponentDef): ComponentManifest {
                         label: 'Max concurrent branches',
                         kind: 'integer',
                         defaultValue: 0,
-                        placeholder: '0 = all at once',
+                        placeholder: '0 = auto',
+                        description:
+                            '0 = auto: runs one branch per CPU core (capped to the branch count). Set a number to cap concurrency explicitly.',
                     },
                 ],
             },

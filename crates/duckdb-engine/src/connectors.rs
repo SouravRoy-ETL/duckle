@@ -5384,8 +5384,14 @@ impl DuckdbEngine {
     ) -> Result<Vec<crate::RunResult>, EngineError> {
         // Forward slashes + no quotes -> safe to splice into the branch JSON.
         let snap = snapshot.display().to_string().replace('\\', "/");
+        // max_concurrency 0 = auto: run one branch per available CPU core
+        // (capped to the branch count) so many branches don't oversubscribe
+        // the machine. A non-zero value is an explicit cap.
         let wave = if max_concurrency == 0 {
-            branches.len().max(1)
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .min(branches.len().max(1))
         } else {
             max_concurrency
         };
