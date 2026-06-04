@@ -11,6 +11,13 @@ fn main() {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     println!("cargo:rustc-env=DUCKLE_BUILD_EPOCH={epoch}");
+    // Force this script to re-run on EVERY build so the stamped epoch is always
+    // the actual build time. Pinning rerun to build.rs alone left local rebuilds
+    // carrying the very first build's timestamp, which made the update check
+    // report "a newer build is available" even when the local build was newer
+    // than the release. Referencing a path that never exists makes Cargo treat
+    // the script as always-dirty and re-run it.
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=.duckle-always-restamp-build-epoch");
     tauri_build::build()
 }

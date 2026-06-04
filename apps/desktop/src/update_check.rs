@@ -148,7 +148,10 @@ pub fn check() -> UpdateInfo {
         let updated = a.get("updated_at").and_then(|v| v.as_str()).unwrap_or("");
         info.latest_tag = rel.get("tag_name").and_then(|v| v.as_str()).map(String::from);
         info.latest_date = Some(updated.to_string());
-        info.release_url = rel.get("html_url").and_then(|v| v.as_str()).map(String::from);
+        // Always send users to the releases page (not a pinned per-tag URL) so
+        // they land on the current/native release listing regardless of how the
+        // release was rolled.
+        info.release_url = Some(format!("https://github.com/{REPO}/releases"));
         info.download_url = a
             .get("browser_download_url")
             .and_then(|v| v.as_str())
