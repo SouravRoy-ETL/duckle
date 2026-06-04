@@ -4688,7 +4688,7 @@ html[dir='rtl'] .topbar-lang {
 :root[data-theme='light'] .node.is-selected {
     box-shadow:
         0 0 0 1px var(--accent),
-        0 0 20px rgba(79, 95, 229, 0.18),
+        0 0 20px rgba(90, 75, 212, 0.18),
         var(--shadow-1);
 }
 
@@ -4696,7 +4696,7 @@ html[dir='rtl'] .topbar-lang {
     background: linear-gradient(
         90deg,
         transparent,
-        rgba(79, 95, 229, 0.35),
+        rgba(90, 75, 212, 0.35),
         rgba(184, 134, 11, 0.28),
         transparent
     );
@@ -4705,13 +4705,13 @@ html[dir='rtl'] .topbar-lang {
 :root[data-theme='light'] .brand-mark {
     box-shadow:
         0 0 0 1px rgba(184, 134, 11, 0.5) inset,
-        0 2px 8px rgba(79, 95, 229, 0.25);
+        0 2px 8px rgba(90, 75, 212, 0.25);
     color: white;
 }
 
 :root[data-theme='light'] .properties-mapper-button {
     color: white;
-    box-shadow: 0 4px 12px rgba(79, 95, 229, 0.25);
+    box-shadow: 0 4px 12px rgba(90, 75, 212, 0.25);
 }
 
 :root[data-theme='light'] .btn-primary {
@@ -4751,9 +4751,9 @@ html[dir='rtl'] .topbar-lang {
 }
 
 :root[data-theme='light'] .schema-source-banner {
-    background: rgba(79, 95, 229, 0.08);
+    background: rgba(90, 75, 212, 0.08);
     color: var(--accent);
-    border-color: rgba(79, 95, 229, 0.25);
+    border-color: rgba(90, 75, 212, 0.25);
 }
 
 :root[data-theme='light'] .schema-source-banner-declared {
@@ -4776,7 +4776,7 @@ html[dir='rtl'] .topbar-lang {
 }
 
 :root[data-theme='light'] .mapper-input-port-name {
-    background: rgba(79, 95, 229, 0.1);
+    background: rgba(90, 75, 212, 0.1);
 }
 
 :root[data-theme='light'] .edge-label-reject .edge-label-badge {
@@ -4808,12 +4808,12 @@ html[dir='rtl'] .topbar-lang {
 }
 
 :root[data-theme='light'] .mapper-input-col.is-used {
-    background: rgba(79, 95, 229, 0.08);
+    background: rgba(90, 75, 212, 0.08);
 }
 
 :root[data-theme='light'] .modal-tip {
-    background: rgba(79, 95, 229, 0.06);
-    border-color: rgba(79, 95, 229, 0.2);
+    background: rgba(90, 75, 212, 0.06);
+    border-color: rgba(90, 75, 212, 0.2);
 }
 
 :root[data-theme='light'] .markdown-body code {
@@ -4822,7 +4822,7 @@ html[dir='rtl'] .topbar-lang {
 }
 
 :root[data-theme='light'] .markdown-body blockquote {
-    background: rgba(79, 95, 229, 0.06);
+    background: rgba(90, 75, 212, 0.06);
 }
 
 :root[data-theme='light'] .markdown-body img {
@@ -4830,7 +4830,7 @@ html[dir='rtl'] .topbar-lang {
 }
 
 :root[data-theme='light'] .repo-node.is-active {
-    background: rgba(79, 95, 229, 0.1);
+    background: rgba(90, 75, 212, 0.1);
     color: var(--accent);
 }
 
