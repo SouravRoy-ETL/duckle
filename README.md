@@ -112,7 +112,7 @@ Three things make Duckle different from the heavyweights and the toy ETL tools:
 > Describe what you need. Duckie writes the pipeline.
 
 <p align="center">
-<img src="docs/assets/real-life-screenshot/duckie-ai-assistant.png" alt="Duckie AI Assistant chat panel generating a CSV-to-Parquet pipeline from a natural-language description" width="100%"/>
+<img src="docs/assets/real-life-screenshot/duckie.png" alt="Duckie AI Assistant panel open beside a real pipeline on the canvas, showing example prompts and a LOCAL badge" width="100%"/>
 </p>
 
 The sidebar on the right is **Duckie AI Assistant** - powered by **Qwen 2.5 Coder 1.5B** running through **llama.cpp**, downloaded once (~1.1 GB) and then run entirely on your CPU. Ask in plain English; Duckie streams back a valid Duckle pipeline definition. One click drops it onto the canvas, ready to inspect, tweak, and run.
@@ -159,46 +159,34 @@ The component palette ships **313 nodes** so the roadmap is visible in the produ
 
 ## Screenshots
 
+Real pipelines, built and run in Duckle - not mockups.
+
 <p align="center">
-  <img src="docs/assets/real-life-screenshot/1.png" alt="The Duckle visual designer with a CSV to Filter to Parquet pipeline" width="100%"/>
+  <img src="docs/assets/real-life-screenshot/mega-pipeline-join.png" alt="A 5-million-row pipeline joining a CSV, a Parquet file, a DuckDB table, and a SQLite table through the visual Map node" width="100%"/>
   <br/>
-  <sub>The visual designer: source -> filter -> sink, with the generated SQL one click away on every node.</sub>
+  <sub>A 5M-row pipeline: a CSV, a Parquet file, a DuckDB table, and a SQLite table enriched through one visual <b>Map</b> (3-way join), no SQL.</sub>
 </p>
 
 <p align="center">
-  <img src="docs/assets/real-life-screenshot/2.png" alt="Component palette and schema autodetect" width="49%"/>
-  <img src="docs/assets/real-life-screenshot/3.png" alt="Parquet sink configuration in dark theme" width="49%"/>
+  <img src="docs/assets/real-life-screenshot/visual-mapper.png" alt="The visual Map editor showing a main input, two lookups, per-output expressions, and an inline filter" width="49%"/>
+  <img src="docs/assets/real-life-screenshot/parallelize-canvas.png" alt="A Parallelize node fanning out aggregate, window, and top-N branches across the canvas" width="49%"/>
 </p>
 <p align="center">
-  <sub>Left: component palette with one-click schema autodetect. Right: sink configuration with write modes, compression, and partitioning, in dark theme.</sub>
+  <sub>Left: the visual <b>Map</b> editor - main plus lookups, per-output expressions, an inline filter. Right: <b>Parallelize</b> fanning out aggregate, window, and top-N branches.</sub>
 </p>
 
 <p align="center">
-  <img src="docs/assets/real-life-screenshot/duckie-ai-assistant.png" alt="Duckie AI Assistant generating a Duckle pipeline from a natural-language description" width="100%"/>
+  <img src="docs/assets/real-life-screenshot/mega-pipeline-parallelize.png" alt="A run summary showing 16 nodes finishing in roughly three seconds across parallel branches writing to Parquet, CSV, DuckDB, and SQLite" width="100%"/>
   <br/>
-  <sub>Duckie AI Assistant: describe the pipeline, get a one-click insert.</sub>
-</p>
-
-### What's new in v0.2
-
-<p align="center">
-  <img src="docs/assets/real-life-screenshot/mega-pipeline-join.png" alt="A multi-source pipeline joining a CSV, a Parquet file, a DuckDB table, and a SQLite table through the visual Map node" width="100%"/>
-  <br/>
-  <sub>Visual <b>Map</b>: join a main input to multiple lookups (CSV + Parquet + DuckDB + SQLite here) with per-output expressions, no SQL.</sub>
+  <sub>One run, many branches: 16 nodes finish in a few seconds. Concurrency auto-detects from CPU cores; branches write to Parquet, CSV, DuckDB, and SQLite at once.</sub>
 </p>
 
 <p align="center">
-  <img src="docs/assets/real-life-screenshot/mega-pipeline-parallelize.png" alt="A monolithic pipeline fanning out aggregate, window, and upsert branches concurrently through Parallelize" width="100%"/>
-  <br/>
-  <sub><b>Parallelize</b>: independent downstream branches (aggregates, windows, upserts) run concurrently; concurrency auto-detects from CPU cores.</sub>
-</p>
-
-<p align="center">
-  <img src="docs/assets/real-life-screenshot/cdc-ducklake.png" alt="A DuckLake CDC change-feed pipeline mirroring changes into a DuckDB table with upsert and delete propagation" width="49%"/>
+  <img src="docs/assets/real-life-screenshot/cdc-ducklake.png" alt="A DuckLake CDC change-feed pipeline mirroring 100k changes into a DuckDB table with upsert and delete propagation" width="49%"/>
   <img src="docs/assets/real-life-screenshot/incremental-load.png" alt="A watermark incremental load reading 5 million rows and appending only new rows" width="49%"/>
 </p>
 <p align="center">
-  <sub>Left: <b>DuckLake CDC</b> change-feed mirrored via <b>Upsert + delete propagation</b>. Right: <b>watermark incremental load</b> over 5M rows, advancing state only on a fully successful run.</sub>
+  <sub>Left: <b>DuckLake CDC</b> change-feed mirrored via <b>upsert + delete propagation</b> (100k rows). Right: <b>watermark incremental load</b> over 5M rows, advancing state only on a fully successful run.</sub>
 </p>
 
 ---

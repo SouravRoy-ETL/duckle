@@ -62,7 +62,7 @@ $FF -loop 1 -t 5 -framerate ${FPS} -i "$ASSETS/1.png" \
     " -c:v libx264 -pix_fmt yuv420p -preset medium -crf 18 -t 5 "$SCENES/02_canvas.mp4"
 
 # ---- Scene 3: Duckie AI (5s)
-$FF -loop 1 -t 5 -framerate ${FPS} -i "$ASSETS/duckie-ai-assistant.png" \
+$FF -loop 1 -t 5 -framerate ${FPS} -i "$ASSETS/duckie.png" \
     -filter_complex "
       ${SHOT_FILTER},
       drawbox=y=ih-180:color=0x000000@0.65:width=iw:height=180:t=fill,
