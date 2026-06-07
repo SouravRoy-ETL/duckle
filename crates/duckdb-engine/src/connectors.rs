@@ -2629,8 +2629,7 @@ impl DuckdbEngine {
         // and fail with a clear message instead of suppaftp's cryptic
         // "Response contains an invalid syntax" (which is what you get when an
         // FTP client reads an SSH banner).
-        let host_l = spec.host.trim().to_ascii_lowercase();
-        if spec.port == 22 || host_l.starts_with("sftp://") || host_l.starts_with("ssh://") {
+        if is_sftp_target(&spec.host, spec.port) {
             return Err(EngineError::Config(
                 "src.ftp speaks FTP / FTPS, not SFTP (SSH File Transfer). SFTP is a different protocol and is not supported yet (it is on the roadmap). If this is an FTP/FTPS server, use its FTP port (commonly 21); if it is genuinely SFTP, it cannot be read through this component."
                     .into(),
@@ -2638,6 +2637,7 @@ impl DuckdbEngine {
         }
         // Accept an ftp:// / ftps:// scheme on the host by stripping it; the
         // connect address is host:port.
+        let host_l = spec.host.trim().to_ascii_lowercase();
         let host = host_l
             .strip_prefix("ftps://")
             .or_else(|| host_l.strip_prefix("ftp://"))
@@ -6325,4 +6325,31 @@ fn resolve_subpipeline_ref(reference: &str) -> String {
         }
     }
     reference.to_string()
+}
+
+/// SFTP (SSH File Transfer Protocol) detection. SFTP is a different protocol
+/// from FTP / FTPS and is not handled by src.ftp (suppaftp). Catch the common
+/// targeting mistakes - the SSH port (22) or an sftp:// / ssh:// scheme on the
+/// host - so the user gets a clear error instead of suppaftp's cryptic
+/// "Response contains an invalid syntax" from reading an SSH banner (#16).
+pub(crate) fn is_sftp_target(host: &str, port: u16) -> bool {
+    let h = host.trim().to_ascii_lowercase();
+    port == 22 || h.starts_with("sftp://") || h.starts_with("ssh://")
+}
+
+#[cfg(test)]
+mod ftp_tests {
+    use super::is_sftp_target;
+
+    #[test]
+    fn detects_sftp_targets_only() {
+        // SFTP targets: the SSH port, or an explicit sftp/ssh scheme.
+        assert!(is_sftp_target("files.example.com", 22));
+        assert!(is_sftp_target("sftp://files.example.com", 2222));
+        assert!(is_sftp_target("SSH://Host", 21));
+        // Genuine FTP / FTPS targets are not flagged.
+        assert!(!is_sftp_target("files.example.com", 21));
+        assert!(!is_sftp_target("ftp://files.example.com", 21));
+        assert!(!is_sftp_target("ftps://files.example.com", 990));
+    }
 }
