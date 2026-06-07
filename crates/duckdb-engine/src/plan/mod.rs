@@ -140,6 +140,7 @@ pub enum RuntimeSpec {
     GitSource(GitSourceSpec),
     Shell(ShellSpec),
     FtpSource(FtpSourceSpec),
+    SftpSource(SftpSourceSpec),
     ClipboardSource(ClipboardSourceSpec),
     EmailSource(EmailSourceSpec),
     EmailSink(EmailSinkSpec),
@@ -510,6 +511,7 @@ fn build_stage(
     let mut git_source: Option<GitSourceSpec> = None;
     let mut shell: Option<ShellSpec> = None;
     let mut ftp_source: Option<FtpSourceSpec> = None;
+    let mut sftp_source: Option<SftpSourceSpec> = None;
     let mut clipboard_source: Option<ClipboardSourceSpec> = None;
     let mut email_source: Option<EmailSourceSpec> = None;
     let mut email_sink: Option<EmailSinkSpec> = None;
@@ -1916,39 +1918,73 @@ fn build_stage(
         });
         (String::new(), StageKind::View, None)
     } else if component_id == "src.ftp" {
-        // FTP / FTPS list+download. List files at `directory`, filter
-        // by optional glob `pattern` (* and ? wildcards), download
-        // each up to `maxFiles`. Each file becomes a row with the
-        // bytes as a base64 string in `content` (so the row is JSON-
-        // serializable and round-trips through DuckDB cleanly).
+        // File-transfer source. The Protocol dropdown selects FTP, FTPS, or
+        // SFTP. FTP / FTPS go through suppaftp; SFTP (SSH - a different
+        // protocol) goes through russh + russh-sftp (issue #16). All three
+        // list files at `directory`, filter by optional glob `pattern`,
+        // download up to `maxFiles`, and emit one row per file
+        // {filename, size, content_b64, modified}.
+        let protocol = string_prop(&props, "protocol")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
         let host = string_prop(&props, "host")
             .filter(|s| !s.is_empty())
             .ok_or_else(|| EngineError::Config(format!("{}: host required", component_id)))?;
-        ftp_source = Some(FtpSourceSpec {
-            node_id: node.id.clone(),
-            host,
-            port: props
-                .get("port")
-                .and_then(|v| v.as_u64())
-                .filter(|n| *n > 0 && *n < 65536)
-                .map(|n| n as u16)
-                .unwrap_or(21),
-            user: string_prop(&props, "user").unwrap_or_else(|| "anonymous".into()),
-            password: string_prop(&props, "password").unwrap_or_else(|| "anonymous@".into()),
-            secure: props
-                .get("secure")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            directory: string_prop(&props, "directory")
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "/".into()),
-            pattern: string_prop(&props, "pattern").filter(|s| !s.is_empty()),
-            max_files: props
-                .get("maxFiles")
-                .and_then(|v| v.as_u64())
-                .filter(|n| *n > 0)
-                .unwrap_or(100),
-        });
+        // The form historically wrote `username` / `remotePath`; accept those
+        // as fallbacks for the canonical `user` / `directory`.
+        let user = string_prop(&props, "user")
+            .or_else(|| string_prop(&props, "username"))
+            .filter(|s| !s.is_empty());
+        let directory = string_prop(&props, "directory")
+            .or_else(|| string_prop(&props, "remotePath"))
+            .filter(|s| !s.is_empty());
+        let pattern = string_prop(&props, "pattern").filter(|s| !s.is_empty());
+        let max_files = props
+            .get("maxFiles")
+            .and_then(|v| v.as_u64())
+            .filter(|n| *n > 0)
+            .unwrap_or(100);
+        let port = props
+            .get("port")
+            .and_then(|v| v.as_u64())
+            .filter(|n| *n > 0 && *n < 65536)
+            .map(|n| n as u16);
+        if protocol == "sftp" {
+            sftp_source = Some(SftpSourceSpec {
+                node_id: node.id.clone(),
+                host,
+                port: port.unwrap_or(22),
+                user: user.ok_or_else(|| {
+                    EngineError::Config(format!("{}: user required for SFTP", component_id))
+                })?,
+                password: string_prop(&props, "password").filter(|s| !s.is_empty()),
+                // Accept a pasted PEM (privateKey) or a key file (privateKeyPath).
+                private_key: string_prop(&props, "privateKey")
+                    .or_else(|| {
+                        string_prop(&props, "privateKeyPath")
+                            .and_then(|p| std::fs::read_to_string(&p).ok())
+                    })
+                    .filter(|s| !s.is_empty()),
+                key_passphrase: string_prop(&props, "keyPassphrase").filter(|s| !s.is_empty()),
+                directory: directory.unwrap_or_else(|| ".".into()),
+                pattern,
+                max_files,
+                host_fingerprint: string_prop(&props, "hostFingerprint").filter(|s| !s.is_empty()),
+            });
+        } else {
+            ftp_source = Some(FtpSourceSpec {
+                node_id: node.id.clone(),
+                host,
+                port: port.unwrap_or(21),
+                user: user.unwrap_or_else(|| "anonymous".into()),
+                password: string_prop(&props, "password").unwrap_or_else(|| "anonymous@".into()),
+                secure: protocol == "ftps"
+                    || props.get("secure").and_then(|v| v.as_bool()).unwrap_or(false),
+                directory: directory.unwrap_or_else(|| "/".into()),
+                pattern,
+                max_files,
+            });
+        }
         (String::new(), StageKind::View, None)
     } else if component_id == "src.xml" {
         // XML row-path source. rowPath is a slash-separated element
@@ -2972,6 +3008,7 @@ fn build_stage(
         .or_else(|| git_source.map(RuntimeSpec::GitSource))
         .or_else(|| shell.map(RuntimeSpec::Shell))
         .or_else(|| ftp_source.map(RuntimeSpec::FtpSource))
+        .or_else(|| sftp_source.map(RuntimeSpec::SftpSource))
         .or_else(|| clipboard_source.map(RuntimeSpec::ClipboardSource))
         .or_else(|| email_source.map(RuntimeSpec::EmailSource))
         .or_else(|| email_sink.map(RuntimeSpec::EmailSink))

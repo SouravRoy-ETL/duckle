@@ -42,8 +42,9 @@ use plan::{
     NatsSinkSpec, NatsSourceSpec, OracleSinkSpec, OracleSourceSpec, PubSubSinkSpec,
     PubSubSourceSpec, QdrantSourceSpec, RabbitSinkSpec, RabbitSourceSpec, RedisSinkSpec,
     RedisSourceSpec, RestPagination, RestResponseFormat, RestSourceSpec, RuntimeSpec, ShellSpec,
-    SnowflakeAuth, SnowflakeSinkSpec, SnowflakeSourceSpec, SqlServerSinkSpec, SqlServerSourceSpec,
-    WasmSpec, WeaviateSourceSpec, WebhookSourceSpec, WebhookSpec, XmlSinkSpec, XmlSourceSpec,
+    SftpSourceSpec, SnowflakeAuth, SnowflakeSinkSpec, SnowflakeSourceSpec, SqlServerSinkSpec,
+    SqlServerSourceSpec, WasmSpec, WeaviateSourceSpec, WebhookSourceSpec, WebhookSpec, XmlSinkSpec,
+    XmlSourceSpec,
 };
 
 #[derive(Debug, Error)]
@@ -834,6 +835,7 @@ impl DuckdbEngine {
                     Some(RuntimeSpec::GitSource(spec)) => self.run_git_source(&db_path, spec),
                     Some(RuntimeSpec::Shell(spec)) => self.run_shell(&db_path, spec),
                     Some(RuntimeSpec::FtpSource(spec)) => self.run_ftp_source(&db_path, spec),
+                    Some(RuntimeSpec::SftpSource(spec)) => self.run_sftp_source(&db_path, spec),
                     Some(RuntimeSpec::ClipboardSource(spec)) => {
                         self.run_clipboard_source(&db_path, spec)
                     }

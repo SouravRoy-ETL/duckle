@@ -519,6 +519,30 @@ pub struct FtpSourceSpec {
     pub max_files: u64,
 }
 
+/// src.sftp: download files from an SFTP (SSH) server, one row per file
+/// {filename, size, content_b64, modified}. Distinct from FTP/FTPS - SSH
+/// transport via russh + russh-sftp on the ring backend (async, wrapped in
+/// block_on by the executor). Auth by password or an OpenSSH private key;
+/// the server's host key is verified against an optional SHA256 fingerprint
+/// pin (the reporter's "Host Fingerprint" ask, issue #16).
+#[derive(Debug, Clone)]
+pub struct SftpSourceSpec {
+    pub node_id: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub password: Option<String>,
+    pub private_key: Option<String>,
+    pub key_passphrase: Option<String>,
+    pub directory: String,
+    pub pattern: Option<String>,
+    pub max_files: u64,
+    /// Expected server host-key fingerprint, e.g. "SHA256:abc123...". When set,
+    /// the connection is refused unless the server key matches. When empty,
+    /// the key is accepted on trust (trust-on-first-use, logged).
+    pub host_fingerprint: Option<String>,
+}
+
 /// src.clipboard: read the system clipboard. If the text parses as
 /// JSON-array-of-objects, the array becomes rows directly; otherwise
 /// a single row {text, length} is emitted. Desktop-only by definition;

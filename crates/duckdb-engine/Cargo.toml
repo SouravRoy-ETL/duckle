@@ -97,10 +97,17 @@ quick-xml = "0.36"
 lapin = { version = "2", default-features = false, features = ["rustls"] }
 # FTP / FTPS client. Pure Rust, synchronous API (fits the per-stage
 # blocking model - no block_on dance). Rustls-backed TLS keeps the
-# build self-contained on every OS. SFTP (SSH-based, different
-# protocol) is on the roadmap; russh pulls in aws-lc-sys which
-# requires NASM at build time, breaking the self-contained build.
+# build self-contained on every OS.
 suppaftp = { version = "8", default-features = false, features = ["rustls-ring"] }
+# SFTP (SSH-based) source, src.sftp. russh + russh-sftp on the `ring`
+# crypto backend (default-features=false drops aws-lc-rs, so NO NASM and
+# NO C toolchain - the same ring 0.17 stack the rest of our TLS already
+# uses, building on all release targets incl. windows-arm64). russh is
+# async; run_sftp_source wraps it in block_on like the mongo / tiberius
+# sources to stay synchronous. Host-key/fingerprint is enforced in russh's
+# check_server_key callback.
+russh = { version = "0.54", default-features = false, features = ["ring", "flate2", "rsa"] }
+russh-sftp = "2.3"
 # System clipboard reader (src.clipboard). Text-only - image-data is
 # off because we never round-trip images through pipelines. arboard
 # is pure-Rust on Windows and macOS; on Linux it talks to X11/Wayland

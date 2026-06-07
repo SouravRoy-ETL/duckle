@@ -2711,6 +2711,164 @@ impl DuckdbEngine {
         ))
     }
 
+    /// src.sftp: connect over SSH, verify the host key against an optional
+    /// SHA256 fingerprint pin, authenticate (private key or password), list
+    /// `directory`, filter by optional glob `pattern`, download up to
+    /// `max_files`. Each file becomes a row {filename, size, content_b64,
+    /// modified}. russh / russh-sftp are async (ring backend); we drive them
+    /// on a private current-thread tokio runtime so the stage stays blocking
+    /// like every other source.
+    pub(crate) fn run_sftp_source(&self, db: &Path, spec: &SftpSourceSpec) -> Result<String, EngineError> {
+        use base64::engine::general_purpose::STANDARD as B64;
+        use base64::Engine as _;
+        self.check_cancelled()?;
+
+        // Host-key verification. With a pinned fingerprint, refuse any other
+        // server key; without one, accept on trust (trust-on-first-use).
+        struct Verifier {
+            expected: Option<String>,
+        }
+        impl russh::client::Handler for Verifier {
+            type Error = russh::Error;
+            async fn check_server_key(
+                &mut self,
+                server_public_key: &russh::keys::ssh_key::PublicKey,
+            ) -> Result<bool, Self::Error> {
+                match &self.expected {
+                    None => Ok(true),
+                    Some(want) => {
+                        let got = server_public_key
+                            .fingerprint(russh::keys::HashAlg::Sha256)
+                            .to_string();
+                        // Compare case-sensitively but tolerant of the
+                        // "SHA256:" prefix on either side.
+                        let norm = |s: &str| s.trim().trim_start_matches("SHA256:").to_string();
+                        Ok(norm(&got) == norm(want))
+                    }
+                }
+            }
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| EngineError::Query(format!("sftp: tokio rt: {}", e)))?;
+
+        let result: Result<Vec<JsonValue>, String> = rt.block_on(async {
+            use russh_sftp::client::SftpSession;
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let config = std::sync::Arc::new(russh::client::Config::default());
+            let handler = Verifier {
+                expected: spec.host_fingerprint.clone(),
+            };
+            let mut session =
+                russh::client::connect(config, (spec.host.as_str(), spec.port), handler)
+                    .await
+                    .map_err(|e| format!("connect {}:{}: {}", spec.host, spec.port, e))?;
+
+            // Auth: a private key wins over a password if both are present.
+            let authed = if let Some(pem) = &spec.private_key {
+                let key = russh::keys::decode_secret_key(pem, spec.key_passphrase.as_deref())
+                    .map_err(|e| format!("private key: {}", e))?;
+                let with_alg = russh::keys::PrivateKeyWithHashAlg::new(
+                    std::sync::Arc::new(key),
+                    Some(russh::keys::HashAlg::Sha256),
+                );
+                session
+                    .authenticate_publickey(spec.user.as_str(), with_alg)
+                    .await
+                    .map_err(|e| format!("publickey auth: {}", e))?
+                    .success()
+            } else if let Some(pw) = &spec.password {
+                session
+                    .authenticate_password(spec.user.as_str(), pw)
+                    .await
+                    .map_err(|e| format!("password auth: {}", e))?
+                    .success()
+            } else {
+                return Err("no credentials: set a password or a private key".into());
+            };
+            if !authed {
+                return Err(format!(
+                    "authentication failed for user '{}' (check credentials / host fingerprint)",
+                    spec.user
+                ));
+            }
+
+            let channel = session
+                .channel_open_session()
+                .await
+                .map_err(|e| format!("open channel: {}", e))?;
+            channel
+                .request_subsystem(true, "sftp")
+                .await
+                .map_err(|e| format!("request sftp subsystem: {}", e))?;
+            let sftp = SftpSession::new(channel.into_stream())
+                .await
+                .map_err(|e| format!("sftp session: {}", e))?;
+
+            let entries = sftp
+                .read_dir(spec.directory.clone())
+                .await
+                .map_err(|e| format!("read_dir {}: {}", spec.directory, e))?;
+
+            let mut rows: Vec<JsonValue> = Vec::new();
+            for entry in entries {
+                if rows.len() as u64 >= spec.max_files {
+                    break;
+                }
+                if entry.file_type().is_dir() {
+                    continue;
+                }
+                let name = entry.file_name();
+                if let Some(p) = &spec.pattern {
+                    if !glob_match(p, &name) {
+                        continue;
+                    }
+                }
+                let meta = entry.metadata();
+                let size = meta.size.map(|n| n as i64);
+                let modified = meta.mtime.and_then(|t| {
+                    chrono::DateTime::<chrono::Utc>::from_timestamp(t as i64, 0)
+                        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+                });
+                let full = entry.path();
+                let mut file = sftp
+                    .open(full.clone())
+                    .await
+                    .map_err(|e| format!("open {}: {}", full, e))?;
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes)
+                    .await
+                    .map_err(|e| format!("read {}: {}", full, e))?;
+                let _ = file.shutdown().await;
+
+                let mut row = serde_json::Map::new();
+                row.insert("filename".into(), JsonValue::String(name));
+                row.insert(
+                    "size".into(),
+                    size.map(JsonValue::from).unwrap_or(JsonValue::Null),
+                );
+                row.insert(
+                    "modified".into(),
+                    modified.map(JsonValue::String).unwrap_or(JsonValue::Null),
+                );
+                row.insert("content_b64".into(), JsonValue::String(B64.encode(&bytes)));
+                rows.push(JsonValue::Object(row));
+            }
+            Ok(rows)
+        });
+
+        let rows = result.map_err(EngineError::Query)?;
+        let count = rows.len();
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
+        Ok(format!(
+            "sftp: materialized {} file(s) from {}:{} into {}",
+            count, spec.host, spec.port, spec.node_id
+        ))
+    }
+
     /// xf.ai.embed: per-row embedding via an OpenAI-compatible API.
     /// Reads the upstream view, batches rows into groups of
     /// batch_size, sends the input_column text array to /v1/embeddings,
