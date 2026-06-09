@@ -908,6 +908,39 @@ fn compiled_sql_redacts_secrets() {
 }
 
 #[test]
+fn compiled_sql_maps_username_to_attach_user() {
+    // The UI writes DB login names as `username`, while DuckDB's
+    // Postgres/MySQL connection string expects `user=...`.
+    // This is pure compilation; no live database is needed.
+    use duckle_duckdb_engine::compile_pipeline_sql_opts;
+    let d = doc(
+        json!([
+            node("s", "src.postgres", json!({
+                "host": "db.example.com",
+                "port": 5432,
+                "database": "app",
+                "username": "admin",
+                "password": "sup3rs3cr3tpw",
+                "tableName": "orders"
+            })),
+        ]),
+        json!([]),
+    );
+
+    let stages = compile_pipeline_sql_opts(&d, false).expect("compile_pipeline_sql_opts");
+    let all_sql = stages
+        .iter()
+        .map(|s| s.sql.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        all_sql.contains("user=admin"),
+        "expected username to be rendered as DB user in ATTACH SQL: {}",
+        all_sql
+    );
+}
+
+#[test]
 fn sink_error_mode_refuses_to_overwrite() {
     let tmp = tempfile::tempdir().unwrap();
     let csv = write_file(tmp.path(), "in.csv", "a\n1\n");

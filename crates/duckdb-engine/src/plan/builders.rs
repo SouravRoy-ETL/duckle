@@ -3160,7 +3160,10 @@ pub(crate) fn db_attach(props: &JsonValue, extension: &str, default_port: u64, r
     if let Some(db) = string_prop(props, "database").filter(|s| !s.is_empty()) {
         parts.push(format!("{}={}", db_key, db));
     }
-    if let Some(u) = string_prop(props, "user").filter(|s| !s.is_empty()) {
+    if let Some(u) = string_prop(props, "user")
+        .or_else(|| string_prop(props, "username"))
+        .filter(|s| !s.is_empty())
+    {
         parts.push(format!("user={}", u));
     }
     if let Some(p) = string_prop(props, "password").filter(|s| !s.is_empty()) {
