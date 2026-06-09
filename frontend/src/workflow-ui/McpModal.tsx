@@ -133,7 +133,7 @@ export function McpModal({ onClose }: { onClose: () => void }) {
                                 <div className="mcp-actions">
                                     <button
                                         type="button"
-                                        className="btn btn-primary"
+                                        className="btn btn-claude"
                                         onClick={() => void connectClaude()}
                                         disabled={!info.bundled || busy !== null}
                                     >
@@ -157,7 +157,7 @@ export function McpModal({ onClose }: { onClose: () => void }) {
                                 <div className="mcp-actions">
                                     <button
                                         type="button"
-                                        className="btn btn-primary"
+                                        className="btn btn-claude"
                                         onClick={() => void inject('claude_desktop', 'Claude Desktop')}
                                         disabled={!info.bundled || busy !== null}
                                     >
@@ -167,7 +167,7 @@ export function McpModal({ onClose }: { onClose: () => void }) {
                                     </button>
                                     <button
                                         type="button"
-                                        className="btn btn-primary"
+                                        className="btn btn-claude"
                                         onClick={() => void inject('cursor', 'Cursor')}
                                         disabled={!info.bundled || busy !== null}
                                     >

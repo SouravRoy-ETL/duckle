@@ -12,19 +12,18 @@
       <stop offset="0" stop-color="#EAF2FF"/>
       <stop offset="1" stop-color="#9FB3D8"/>
     </linearGradient>
-    <clipPath id="sq"><rect x="56" y="48" width="88" height="88" rx="25"/></clipPath>
   </defs>
 
   <rect x="1" y="1" width="1198" height="298" rx="26" fill="url(#bg)" stroke="#1b2436" stroke-width="1.5"/>
 
-  <!-- logo mark -->
-  <rect x="56" y="48" width="88" height="88" rx="25" fill="url(#g)"/>
-  <g clip-path="url(#sq)">
-    <rect x="-60" y="48" width="36" height="88" fill="#ffffff" opacity="0.18" transform="skewX(-18)">
-      <animate attributeName="x" values="-70;180" dur="3.6s" repeatCount="indefinite"/>
-    </rect>
+  <!-- logo mark: the Duckle "D." (dark variant) -->
+  <g transform="translate(56,48) scale(0.34375)">
+    <circle cx="128" cy="128" r="120" fill="#1B1F2A" stroke="#ffffff" stroke-opacity="0.08" stroke-width="3"/>
+    <g fill="#FFD000">
+      <path d="M56 54 A74 74 0 0 1 56 202 Z"/>
+      <circle cx="173" cy="128" r="27"/>
+    </g>
   </g>
-  <text x="100" y="93" text-anchor="middle" dominant-baseline="central" font-family="'Segoe UI', system-ui, Arial, sans-serif" font-size="60" font-weight="800" fill="#fff">D</text>
 
   <!-- wordmark -->
   <text x="162" y="112" font-family="'Segoe UI', system-ui, Arial, sans-serif" font-size="58" font-weight="800" fill="url(#wm)">Duckle</text>

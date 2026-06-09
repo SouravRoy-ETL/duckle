@@ -35,6 +35,7 @@ import ScheduleEditorModal from './workflow-ui/ScheduleEditorModal';
 import BuildPipelineModal from './workflow-ui/BuildPipelineModal';
 import { McpModal } from './workflow-ui/McpModal';
 import { ClaudeIcon } from './workflow-ui/ClaudeIcon';
+import { DuckleLogo } from './workflow-ui/DuckleLogo';
 import EngineSetupModal from './workflow-ui/EngineSetupModal';
 import ChatPanel from './workflow-ui/ChatPanel';
 import GitPanel from './workflow-ui/GitPanel';
@@ -1528,9 +1529,7 @@ export default function App() {
                 data-tauri-drag-region
             >
                 <div className="brand" data-tauri-drag-region>
-                    <span className="brand-mark" aria-hidden="true">
-                        D
-                    </span>
+                    <DuckleLogo size={24} className="brand-logo" />
                     Duckle
                 </div>
                 <div className="topbar-sep" aria-hidden="true" />

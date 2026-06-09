@@ -39,6 +39,12 @@
        visual mapper button. DuckDB lemon -> hot orange ("duck"). */
     --gradient-brand: linear-gradient(135deg, #fff100, #ff6900);
 
+    /* The "D." brand mark (DuckleLogo). Dark theme: yellow glyph on a slate
+       disc. Light theme overrides these to an orange glyph on a pale disc. */
+    --logo-disc: #1b1f2a;
+    --logo-glyph: #ffd000;
+    --logo-ring: rgba(255, 255, 255, 0.08);
+
     /* Component-kind hues - drawn from the DuckDB secondary palette
        (maya blue inflow / hot orange outflow / slate-blue control). */
     --kind-source: #2eafff;
@@ -289,24 +295,22 @@ textarea:focus-visible {
     letter-spacing: -0.015em;
 }
 
-.brand-mark {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
+.brand-logo {
+    display: block;
     width: 24px;
     height: 24px;
-    border-radius: 7px;
-    background: var(--gradient-brand);
-    color: var(--bg-0);
-    font-size: 13px;
-    font-weight: 900;
-    font-family:
-        'Inter Variable', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
-    box-shadow:
-        0 0 0 1px rgba(255, 241, 0, 0.32) inset,
-        0 4px 14px rgba(255, 241, 0, 0.3),
-        0 0 24px rgba(255, 241, 0, 0.25);
-    letter-spacing: 0;
+    flex: none;
+}
+
+/* The "D." mark colors follow the theme via the --logo-* tokens. */
+.duckle-logo-disc {
+    fill: var(--logo-disc);
+    stroke: var(--logo-ring);
+    stroke-width: 1.5;
+}
+
+.duckle-logo-glyph {
+    fill: var(--logo-glyph);
 }
 
 .topbar-spacer {
@@ -4726,11 +4730,10 @@ html[dir='rtl'] .topbar-lang {
     );
 }
 
-:root[data-theme='light'] .brand-mark {
-    box-shadow:
-        0 0 0 1px rgba(184, 134, 11, 0.5) inset,
-        0 2px 8px rgba(232, 89, 12, 0.25);
-    color: white;
+:root[data-theme='light'] {
+    --logo-disc: #ffffff;
+    --logo-glyph: #ff6900;
+    --logo-ring: rgba(20, 24, 40, 0.1);
 }
 
 :root[data-theme='light'] .properties-mapper-button {
@@ -7130,6 +7133,27 @@ html[dir='rtl'] .topbar-lang {
 @keyframes claude-glow {
     0%, 100% { filter: drop-shadow(0 0 1px rgba(217, 119, 87, 0.45)); }
     50% { filter: drop-shadow(0 0 5px rgba(217, 119, 87, 0.95)); }
+}
+/* Primary action buttons in the MCP popup use Claude's orange (not the Duckle
+   lemon) so the "connect to Claude" flow reads in Claude's color scheme. */
+.btn-claude {
+    background: #d97757;
+    border-color: #d97757;
+    color: #ffffff;
+    box-shadow:
+        0 4px 14px rgba(217, 119, 87, 0.32),
+        0 0 0 1px rgba(217, 119, 87, 0.28) inset;
+}
+.btn-claude:hover {
+    background: #c96746;
+    border-color: #c96746;
+    filter: brightness(1.04);
+}
+.btn-claude:disabled {
+    background: var(--bg-2);
+    border-color: var(--border);
+    color: var(--text-3);
+    box-shadow: none;
 }
 /* Row of connect/copy buttons in the MCP popup. */
 .mcp-actions {
