@@ -1573,8 +1573,8 @@ export default function App() {
                     type="button"
                     className="topbar-theme-toggle"
                     onClick={() => setShowMcpModal(true)}
-                    title="Connect to an AI (MCP)"
-                    aria-label="Connect Duckle to an AI assistant over MCP"
+                    title="Connect to Claude"
+                    aria-label="Connect Duckle to Claude"
                 >
                     <ClaudeIcon size={14} className="claude-icon claude-icon-glow" />
                 </button>
