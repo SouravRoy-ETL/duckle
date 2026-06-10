@@ -31199,30 +31199,22 @@
         "schemaSource": "upstream",
         "sections": [
           {
-            "label": "Loop",
+            "label": "Iterate",
             "fields": [
               {
-                "key": "variable",
-                "label": "Loop variable",
-                "kind": "text",
-                "placeholder": "i"
+                "key": "pipelineRef",
+                "label": "Pipeline to run",
+                "kind": "pipeline-ref",
+                "required": true,
+                "description": "Child pipeline, run once per iteration. Use ${ITER_INDEX} (0-based) inside it."
               },
               {
-                "key": "from",
-                "label": "From",
+                "key": "count",
+                "label": "Iterations",
                 "kind": "integer",
-                "defaultValue": 0
-              },
-              {
-                "key": "to",
-                "label": "To",
-                "kind": "integer",
-                "defaultValue": 10
-              },
-              {
-                "key": "collection",
-                "label": "Or iterate over column",
-                "kind": "column"
+                "defaultValue": 1,
+                "required": true,
+                "description": "How many times to run the child pipeline."
               }
             ]
           }
@@ -31275,30 +31267,14 @@
         "schemaSource": "upstream",
         "sections": [
           {
-            "label": "Loop",
+            "label": "For each row",
             "fields": [
               {
-                "key": "variable",
-                "label": "Loop variable",
-                "kind": "text",
-                "placeholder": "i"
-              },
-              {
-                "key": "from",
-                "label": "From",
-                "kind": "integer",
-                "defaultValue": 0
-              },
-              {
-                "key": "to",
-                "label": "To",
-                "kind": "integer",
-                "defaultValue": 10
-              },
-              {
-                "key": "collection",
-                "label": "Or iterate over column",
-                "kind": "column"
+                "key": "pipelineRef",
+                "label": "Pipeline to run",
+                "kind": "pipeline-ref",
+                "required": true,
+                "description": "Child pipeline, run once per upstream row. Use ${ITER_ITEM_<COLUMN>} (uppercased) and ${ITER_INDEX} inside it."
               }
             ]
           }

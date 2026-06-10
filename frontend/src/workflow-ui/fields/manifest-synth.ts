@@ -3408,17 +3408,34 @@ function synthRoutingControl(comp: ComponentDef): ComponentManifest {
         return base(comp, [{ label: id === 'ctl.merge' ? 'Merge streams' : 'Replicate', fields: [] }], 'upstream');
     }
     if (id === 'ctl.iterate' || id === 'ctl.foreach') {
-        return base(comp, [
+        // Both run a CHILD pipeline (pipelineRef): iterate runs it `count`
+        // times (${ITER_INDEX}); foreach runs it once per upstream row
+        // (${ITER_ITEM_<COLUMN>} + ${ITER_INDEX}). Without pipelineRef the run
+        // fails with "pipelineRef required" - the old Loop fields (variable /
+        // from / to / collection) were never read by the engine (issue #26).
+        const isIterate = id === 'ctl.iterate';
+        const fields: Field[] = [
             {
-                label: 'Loop',
-                fields: [
-                    { key: 'variable', label: 'Loop variable', kind: 'text', placeholder: 'i' },
-                    { key: 'from', label: 'From', kind: 'integer', defaultValue: 0 },
-                    { key: 'to', label: 'To', kind: 'integer', defaultValue: 10 },
-                    { key: 'collection', label: 'Or iterate over column', kind: 'column' },
-                ],
+                key: 'pipelineRef',
+                label: 'Pipeline to run',
+                kind: 'pipeline-ref',
+                required: true,
+                description: isIterate
+                    ? 'Child pipeline, run once per iteration. Use ${ITER_INDEX} (0-based) inside it.'
+                    : 'Child pipeline, run once per upstream row. Use ${ITER_ITEM_<COLUMN>} (uppercased) and ${ITER_INDEX} inside it.',
             },
-        ], 'upstream');
+        ];
+        if (isIterate) {
+            fields.push({
+                key: 'count',
+                label: 'Iterations',
+                kind: 'integer',
+                defaultValue: 1,
+                required: true,
+                description: 'How many times to run the child pipeline.',
+            });
+        }
+        return base(comp, [{ label: isIterate ? 'Iterate' : 'For each row', fields }], 'upstream');
     }
     return synthGeneric(comp, 'upstream');
 }
