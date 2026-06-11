@@ -97,6 +97,8 @@ type Props = {
     onEdgeDelete: (edgeId: string) => void;
     onEdgeEdit: (edgeId: string) => void;
     nodeAutodetectAvailable: (nodeId: string) => boolean;
+    /** Active pipeline id - used to remember pan/zoom per pipeline. */
+    pipelineId?: string | null;
 };
 
 function CanvasInner({
@@ -114,9 +116,63 @@ function CanvasInner({
     onEdgeDelete,
     onEdgeEdit,
     nodeAutodetectAvailable,
+    pipelineId,
 }: Props) {
-    const { screenToFlowPosition } = useReactFlow();
+    const { screenToFlowPosition, setViewport, fitView } = useReactFlow();
     const { theme } = useTheme();
+
+    // Remember pan/zoom per pipeline (per user = localStorage on this machine),
+    // so reopening a pipeline restores where you left off instead of snapping to
+    // a default fit. Restore-in-progress is tracked so the programmatic
+    // setViewport doesn't immediately overwrite the saved value via onMoveEnd.
+    const viewportRestoredFor = useRef<string | null>(null);
+    const viewportKey = (id: string) => `duckle.viewport.${id}`;
+    useEffect(() => {
+        const id = pipelineId;
+        if (!id) return;
+        viewportRestoredFor.current = null;
+        // rAF so React Flow has the new pipeline's nodes before we fit/restore.
+        const raf = requestAnimationFrame(() => {
+            const saved = localStorage.getItem(viewportKey(id));
+            if (saved) {
+                try {
+                    const vp = JSON.parse(saved);
+                    if (
+                        typeof vp?.x === 'number' &&
+                        typeof vp?.y === 'number' &&
+                        typeof vp?.zoom === 'number'
+                    ) {
+                        setViewport(vp);
+                    } else {
+                        fitView();
+                    }
+                } catch {
+                    fitView();
+                }
+            } else {
+                fitView();
+            }
+            viewportRestoredFor.current = id;
+        });
+        return () => cancelAnimationFrame(raf);
+    }, [pipelineId, setViewport, fitView]);
+
+    const handleMoveEnd = useCallback(
+        (_: unknown, vp: { x: number; y: number; zoom: number }) => {
+            const id = pipelineId;
+            // Skip saves triggered by the restore itself (before it completes).
+            if (!id || viewportRestoredFor.current !== id) return;
+            try {
+                localStorage.setItem(
+                    viewportKey(id),
+                    JSON.stringify({ x: vp.x, y: vp.y, zoom: vp.zoom }),
+                );
+            } catch {
+                /* localStorage full / unavailable - non-fatal */
+            }
+        },
+        [pipelineId],
+    );
     const menu = useContextMenu();
     const mouseRef = useRef({ x: 0, y: 0 });
     const [pendingConnection, setPendingConnection] = useState<Connection | null>(null);
@@ -502,7 +558,7 @@ function CanvasInner({
                 defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
                 deleteKeyCode={DELETE_KEYS}
                 proOptions={PRO_OPTIONS}
-                fitView
+                onMoveEnd={handleMoveEnd}
                 colorMode={theme}
             >
                 <Background gap={16} />

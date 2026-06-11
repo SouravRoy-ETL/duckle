@@ -19,17 +19,8 @@ import {
     TOTAL_COMPONENT_COUNT,
     AVAILABLE_COUNT,
     type ComponentDef,
-    type NodeKind,
 } from './palette-data';
-
-const KIND_COLOR: Record<NodeKind, string> = {
-    source: 'var(--kind-source)',
-    transform: 'var(--kind-transform)',
-    sink: 'var(--kind-sink)',
-    control: 'var(--kind-control)',
-    quality: 'var(--kind-quality)',
-    custom: 'var(--kind-custom)',
-};
+import ComponentIcon from './ComponentIcon';
 
 const CATEGORY_ICONS: Record<string, React.ReactNode> = {
     sources: <ArrowDownToLine size={13} />,
@@ -241,10 +232,11 @@ export default function Palette() {
                                                         onDragStart={e => onDragStart(e, c)}
                                                         title={c.summary ?? c.label}
                                                     >
-                                                        <span
-                                                            className="palette-component-dot"
-                                                            style={{ background: KIND_COLOR[c.kind] }}
-                                                            aria-hidden="true"
+                                                        <ComponentIcon
+                                                            componentId={c.id}
+                                                            kind={c.kind}
+                                                            size={15}
+                                                            className="palette-component-icon"
                                                         />
                                                         <span className="palette-component-label">
                                                             {c.label}

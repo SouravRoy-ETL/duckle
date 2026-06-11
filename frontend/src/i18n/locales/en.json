@@ -22,7 +22,8 @@
     "ariaLabel": "Editor views",
     "canvas": "Canvas",
     "plan": "Plan",
-    "run": "Run"
+    "run": "Run",
+    "history": "History"
   },
   "header": {
     "unsavedChanges": "unsaved changes",

@@ -32,6 +32,7 @@ import {
     type RunResult,
 } from './tauri-bridge';
 import ScheduleEditorModal from './workflow-ui/ScheduleEditorModal';
+import BackfillModal from './workflow-ui/BackfillModal';
 import BuildPipelineModal from './workflow-ui/BuildPipelineModal';
 import { McpModal } from './workflow-ui/McpModal';
 import { ClaudeIcon } from './workflow-ui/ClaudeIcon';
@@ -418,6 +419,13 @@ export default function App() {
     );
     const handleSchedulePipeline = useCallback((pipelineId: string) => {
         setScheduleModalPipelineId(pipelineId);
+    }, []);
+
+    const [backfillModalPipelineId, setBackfillModalPipelineId] = useState<string | null>(
+        null,
+    );
+    const handleBackfillPipeline = useCallback((pipelineId: string) => {
+        setBackfillModalPipelineId(pipelineId);
     }, []);
 
     const [buildModalPipelineId, setBuildModalPipelineId] = useState<string | null>(null);
@@ -1633,6 +1641,7 @@ export default function App() {
                     onDuplicateRepoItem={handleDuplicateRepoItem}
                     onDeleteRepoItem={handleDeleteRepoItem}
                     onSchedulePipeline={handleSchedulePipeline}
+                    onBackfillPipeline={handleBackfillPipeline}
                     onBuildPipeline={handleBuildPipeline}
                 />
                 <section className="canvas-shell">
@@ -1660,6 +1669,8 @@ export default function App() {
                         runResult={runResult}
                         isRunning={isRunning}
                         nodeLabels={nodeLabels}
+                        workspacePath={workspacePathState}
+                        pipelineId={activeJobId}
                         onNodesChange={handleNodesChange}
                         onEdgesChange={handleEdgesChange}
                         onConnectWithType={handleConnectWithType}
@@ -1754,6 +1765,17 @@ export default function App() {
                     }
                     workspacePath={workspacePathState}
                     onClose={() => setScheduleModalPipelineId(null)}
+                />
+            ) : null}
+
+            {backfillModalPipelineId ? (
+                <BackfillModal
+                    pipelineName={
+                        repo.find(r => r.id === backfillModalPipelineId)?.name ??
+                        backfillModalPipelineId
+                    }
+                    workspacePath={workspacePathState}
+                    onClose={() => setBackfillModalPipelineId(null)}
                 />
             ) : null}
 

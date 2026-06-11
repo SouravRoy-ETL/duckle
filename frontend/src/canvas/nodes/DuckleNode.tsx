@@ -17,6 +17,8 @@ import type { PortDef } from '../../workflow-ui/fields/types';
 import { resolveOutputSchema } from '../../schema-resolve';
 import { useRunStatus } from '../run-status-context';
 import { deriveNodeSubtitle } from '../../node-subtitle';
+import ComponentIcon from '../../workflow-ui/ComponentIcon';
+import type { NodeKind } from '../../workflow-ui/palette-data';
 
 export type DuckleFlowNode = Node<DuckleNodeData>;
 
@@ -105,7 +107,15 @@ export default function DuckleNode({ id, data, selected, type }: NodeProps<Duckl
                         </span>
                     ) : null}
                 </div>
-                <div className="node-label">{data.label}</div>
+                <div className="node-label-row">
+                    <ComponentIcon
+                        componentId={data.componentId ?? ''}
+                        kind={kind as NodeKind}
+                        size={16}
+                        className="node-icon"
+                    />
+                    <div className="node-label">{data.label}</div>
+                </div>
                 {(() => {
                     // Subtitle reflects ONLY the live config (file name,
                     // predicate, group-by keys, …). We intentionally don't

@@ -11,6 +11,7 @@ import {
     Folder,
     FolderOpen,
     FolderPlus,
+    History,
     Package,
     Pencil,
     Plug,
@@ -41,6 +42,7 @@ type Props = {
     onDuplicate: (id: string) => void;
     onDelete: (id: string) => void;
     onSchedulePipeline: (id: string) => void;
+    onBackfillPipeline: (id: string) => void;
     onBuildPipeline: (id: string) => void;
 };
 
@@ -91,6 +93,7 @@ export default function ProjectTree(props: Props) {
         onDuplicate,
         onDelete,
         onSchedulePipeline,
+        onBackfillPipeline,
         onBuildPipeline,
     } = props;
 
@@ -265,6 +268,13 @@ export default function ProjectTree(props: Props) {
                 label: 'Schedule…',
                 icon: <AlarmClock size={ICON_SIZE} />,
                 onClick: () => onSchedulePipeline(item.id),
+            });
+            items.push({
+                kind: 'item',
+                key: 'backfill',
+                label: 'Backfill…',
+                icon: <History size={ICON_SIZE} />,
+                onClick: () => onBackfillPipeline(item.id),
             });
             items.push({
                 kind: 'item',

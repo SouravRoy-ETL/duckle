@@ -775,6 +775,14 @@ function fileFormatSection(comp: ComponentDef): FormSection[] {
                         ],
                     },
                     { key: 'flatten', label: 'Flatten nested objects', kind: 'bool', defaultValue: false },
+                    {
+                        key: 'recordsPath',
+                        label: 'Records path',
+                        kind: 'text',
+                        placeholder: 'data   or   response.records',
+                        description:
+                            "Dotted key path to the array of records inside the JSON, for API-style responses where the rows live under a key (e.g. {\"data\":[...]} -> 'data', or {\"response\":{\"records\":[...]}} -> 'response.records'). Each record is unnested and nested fields are flattened into columns. Leave blank for a plain top-level array or JSON Lines.",
+                    },
                 ],
             },
         ];
@@ -4455,12 +4463,105 @@ function synthGeneric(comp: ComponentDef, schemaSource: SchemaSource = 'upstream
     ], schemaSource);
 }
 
+// xf.dbt lives in the Custom Code palette section (group code.dbt) but needs
+// its own settings, so it is dispatched by id at the top of synthesizeManifest
+// rather than via the group table.
+function synthDbt(comp: ComponentDef): ComponentManifest {
+    return base(comp, [
+        {
+            label: 'Inline model',
+            fields: [
+                {
+                    key: 'model',
+                    label: 'Model SQL',
+                    kind: 'textarea',
+                    rows: 8,
+                    placeholder:
+                        "select country, sum(amount) as revenue\nfrom {{ var('duckle_input') }}\ngroup by country",
+                    description: "Write one dbt model right here - no external project needed. Reference the upstream node with {{ var('duckle_input') }}. The engine scaffolds an ephemeral dbt project and runs it. Leave empty to use an existing project below instead.",
+                },
+                {
+                    key: 'modelName',
+                    label: 'Model name',
+                    kind: 'text',
+                    defaultValue: 'duckle_model',
+                    description: 'Name of the inline model and its output table.',
+                },
+            ],
+        },
+        {
+            label: 'Existing project (alternative to inline)',
+            fields: [
+                {
+                    key: 'projectDir',
+                    label: 'Project directory',
+                    kind: 'text',
+                    placeholder: 'C:\\work\\my_dbt_project',
+                    description: 'Folder containing dbt_project.yml. Use this to run an existing dbt project instead of an inline model. The engine generates profiles.yml for the dbt-duckdb adapter pointed at this run.',
+                },
+                {
+                    key: 'command',
+                    label: 'dbt command',
+                    kind: 'text',
+                    defaultValue: 'run',
+                    placeholder: 'run --select staging+',
+                    description: 'dbt subcommand and flags, split on spaces. Examples: run, build (run + test), test, "run --select my_model".',
+                },
+                {
+                    key: 'outputModel',
+                    label: 'Output model (optional)',
+                    kind: 'text',
+                    placeholder: 'fct_daily_revenue',
+                    description: 'Read this model back as the node output. Leave empty (project mode) to emit a per-model run summary. In inline mode this defaults to the model name.',
+                },
+            ],
+        },
+        {
+            label: 'Advanced',
+            fields: [
+                {
+                    key: 'schema',
+                    label: 'Schema',
+                    kind: 'text',
+                    defaultValue: 'main',
+                    description: 'Schema dbt materializes into (the generated profile target schema).',
+                },
+                {
+                    key: 'database',
+                    label: 'Target database file (optional)',
+                    kind: 'text',
+                    placeholder: 'leave empty to use the run database',
+                    description: 'A specific DuckDB file to build into. Default: the pipeline run database, so dbt composes with the rest of the canvas.',
+                },
+                {
+                    key: 'dbtBin',
+                    label: 'dbt executable (optional)',
+                    kind: 'text',
+                    placeholder: 'dbt',
+                    description: 'Path to dbt if it is not on PATH / not the bundled one. Needs the DuckDB adapter (dbt-duckdb).',
+                },
+                {
+                    key: 'timeoutMs',
+                    label: 'Timeout (ms, optional)',
+                    kind: 'number',
+                    placeholder: 'e.g. 600000',
+                    description: 'Kill the dbt process after this many milliseconds. Empty = no timeout.',
+                },
+            ],
+        },
+    ]);
+}
+
 // Main entry ------------------------------------------------------------
 
 export function synthesizeManifest(componentId: string): ComponentManifest | undefined {
     const entry = findPaletteEntry(componentId);
     if (!entry) return undefined;
     const { groupId, comp } = entry;
+
+    // Id-specific dispatch for components whose palette group has no dedicated
+    // synth path (e.g. xf.dbt sits in the Custom Code section).
+    if (componentId === 'xf.dbt') return synthDbt(comp);
 
     // Sources
     if (groupId === 'src.files') return synthFileSource(comp);

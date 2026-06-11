@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { searchComponents, type ComponentDef } from '../workflow-ui/palette-data';
+import ComponentIcon from '../workflow-ui/ComponentIcon';
 
 // Canvas quick-add: start typing on the canvas to fuzzy-search every component
 // (sources, transforms, sinks, connectors, control, quality, code) and drop the
@@ -77,7 +78,12 @@ export function QuickAddSearch({
                                 onMouseEnter={() => setActive(i)}
                                 onClick={() => onPick(c)}
                             >
-                                <span className={'quick-add-dot kind-' + c.kind} aria-hidden="true" />
+                                <ComponentIcon
+                                    componentId={c.id}
+                                    kind={c.kind}
+                                    size={15}
+                                    className="quick-add-icon"
+                                />
                                 <span className="quick-add-label">{c.label}</span>
                                 <span className="quick-add-id">{c.id}</span>
                                 {c.availability !== 'available' ? (

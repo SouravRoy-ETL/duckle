@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { Edge, Node } from '@xyflow/react';
-import { CheckCircle2, MousePointer2, Workflow } from 'lucide-react';
+import { CheckCircle2, ChevronLeft, ChevronRight, MousePointer2, Workflow } from 'lucide-react';
 import { resolveUpstreamSchema, resolveUpstreamSampleRows } from '../schema-resolve';
 import type { Column, DuckleNodeData } from '../pipeline-types';
 import type {
@@ -120,9 +120,50 @@ export default function PropertiesPanel({
         return { id: item.id, name: item.name, variables: payload?.variables ?? [] };
     }, [activeContextId, repoItems]);
 
+    // Right panel collapse: a thin rail on the right edge with an expand button,
+    // so the canvas can use the full width. Persists per machine.
+    const [collapsed, setCollapsed] = useState(
+        () => localStorage.getItem('duckle.properties.collapsed') === '1',
+    );
+    const toggleCollapsed = () =>
+        setCollapsed(c => {
+            const next = !c;
+            try {
+                localStorage.setItem('duckle.properties.collapsed', next ? '1' : '0');
+            } catch {
+                /* localStorage unavailable - non-fatal */
+            }
+            return next;
+        });
+
+    if (collapsed) {
+        return (
+            <aside className="properties properties-collapsed">
+                <button
+                    type="button"
+                    className="properties-collapse-toggle"
+                    onClick={toggleCollapsed}
+                    title={t('properties.expandPanel', { defaultValue: 'Expand panel' })}
+                    aria-label={t('properties.expandPanel', { defaultValue: 'Expand panel' })}
+                >
+                    <ChevronLeft size={16} />
+                </button>
+            </aside>
+        );
+    }
+
     if (!selected) {
         return (
             <aside className="properties">
+                <button
+                    type="button"
+                    className="properties-collapse-toggle properties-collapse-toggle-float"
+                    onClick={toggleCollapsed}
+                    title={t('properties.collapsePanel', { defaultValue: 'Collapse panel' })}
+                    aria-label={t('properties.collapsePanel', { defaultValue: 'Collapse panel' })}
+                >
+                    <ChevronRight size={16} />
+                </button>
                 <div className="properties-empty">
                     <MousePointer2 size={32} strokeWidth={1.4} />
                     <div className="properties-empty-title">{t('properties.nothingSelected')}</div>
@@ -169,6 +210,15 @@ export default function PropertiesPanel({
 
     return (
         <aside className="properties">
+            <button
+                type="button"
+                className="properties-collapse-toggle properties-collapse-toggle-float"
+                onClick={toggleCollapsed}
+                title={t('properties.collapsePanel', { defaultValue: 'Collapse panel' })}
+                aria-label={t('properties.collapsePanel', { defaultValue: 'Collapse panel' })}
+            >
+                <ChevronRight size={16} />
+            </button>
             <div className="properties-header">
                 <div className="properties-kind-row">
                     <span

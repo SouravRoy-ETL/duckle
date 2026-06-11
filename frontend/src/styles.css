@@ -583,15 +583,14 @@ textarea:focus-visible {
     color: var(--text-2);
 }
 
-.palette-component-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
+.palette-component-icon {
+    width: 15px;
+    height: 15px;
     flex-shrink: 0;
-    opacity: 0.85;
+    opacity: 0.9;
 }
 
-.palette-component.is-planned .palette-component-dot {
+.palette-component.is-planned .palette-component-icon {
     opacity: 0.4;
 }
 
@@ -740,6 +739,18 @@ textarea:focus-visible {
 .node-label {
     font-weight: 600;
     font-size: 14px;
+}
+
+.node-label-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.node-icon {
+    flex-shrink: 0;
+    color: var(--text-2);
+    opacity: 0.92;
 }
 
 .node-subtitle {
@@ -1902,6 +1913,41 @@ textarea:focus-visible {
     flex-direction: column;
     min-height: 0;
     flex-shrink: 0;
+    position: relative;
+}
+
+/* Collapsed: a thin rail on the right edge with an expand button. */
+.properties.properties-collapsed {
+    width: 32px;
+    align-items: center;
+    padding-top: 8px;
+}
+
+.properties-collapse-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-2);
+    color: var(--text-2);
+    cursor: pointer;
+    flex: none;
+}
+
+.properties-collapse-toggle:hover {
+    color: var(--text-1);
+    background: var(--bg-3);
+}
+
+/* When expanded, float the collapse button in the panel's top-right corner. */
+.properties-collapse-toggle-float {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 2;
 }
 
 .properties-empty {
@@ -5396,6 +5442,124 @@ html[dir='rtl'] .topbar-lang {
     gap: 12px;
 }
 
+/* Backfill modal: inspect/reset xf.incremental + ducklake CDC saved state. */
+.modal-backfill {
+    width: 100%;
+    max-width: 720px;
+}
+.modal-backfill-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.backfill-intro {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-2);
+    line-height: 1.5;
+}
+.backfill-empty {
+    padding: 18px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-3);
+    background: var(--bg-1);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-sm);
+}
+.backfill-error {
+    padding: 8px 11px;
+    font-size: 12px;
+    color: var(--danger);
+    background: rgba(255, 77, 109, 0.08);
+    border: 1px solid rgba(255, 77, 109, 0.3);
+    border-radius: var(--radius-sm);
+    white-space: pre-wrap;
+}
+.backfill-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+.backfill-table th {
+    text-align: left;
+    padding: 4px 8px;
+    font-weight: 600;
+    color: var(--text-3);
+    border-bottom: 1px solid var(--border);
+}
+.backfill-table td {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+}
+.backfill-node {
+    font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Consolas, monospace;
+    color: var(--text-1);
+}
+.backfill-kind {
+    text-transform: uppercase;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: var(--accent);
+}
+.backfill-type {
+    margin-left: 6px;
+    font-size: 10px;
+    color: var(--text-3);
+}
+.backfill-value {
+    width: 100%;
+    min-width: 160px;
+}
+.backfill-actions {
+    display: flex;
+    gap: 6px;
+    justify-content: flex-end;
+    white-space: nowrap;
+}
+.backfill-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 9px;
+    font-size: 11px;
+    color: var(--text-1);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+.backfill-btn:hover:not(:disabled) {
+    border-color: var(--border-bright);
+}
+.backfill-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+.backfill-btn-danger:hover:not(:disabled) {
+    color: var(--danger);
+    border-color: rgba(255, 77, 109, 0.4);
+}
+.backfill-refresh {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--text-2);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+.backfill-refresh:hover {
+    color: var(--text-1);
+    border-color: var(--border-bright);
+}
+
 .schedule-list {
     display: flex;
     flex-direction: column;
@@ -6944,6 +7108,61 @@ html[dir='rtl'] .topbar-lang {
     color: var(--danger);
     white-space: pre-wrap;
 }
+/* Coarse error bucket (auth/network/timeout/...) shown ahead of the message
+   so failures are scannable by kind at a glance. */
+.run-error-category {
+    display: inline-block;
+    margin-right: 6px;
+    padding: 0 6px;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 16px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--danger);
+    background: rgba(255, 77, 109, 0.12);
+    border: 1px solid rgba(255, 77, 109, 0.35);
+    border-radius: 999px;
+    vertical-align: middle;
+}
+/* Runs history tab: per-pipeline run trend + table. */
+.runs-view {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
+    overflow: auto;
+    height: 100%;
+}
+.runs-summary {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 10px 12px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+.runs-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.runs-stat-value {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-1);
+}
+.runs-stat-label {
+    font-size: 11px;
+    color: var(--text-3);
+}
+.runs-sparkline {
+    margin-left: auto;
+}
+.runs-when {
+    color: var(--text-1);
+}
 .run-row-ok {
     color: var(--success);
 }
@@ -7236,30 +7455,11 @@ html[dir='rtl'] .topbar-lang {
 .quick-add-row.is-active {
     background: var(--accent-soft);
 }
-.quick-add-dot {
+.quick-add-icon {
     flex: none;
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    background: var(--text-3);
-}
-.quick-add-dot.kind-source {
-    background: var(--kind-source);
-}
-.quick-add-dot.kind-transform {
-    background: var(--kind-transform);
-}
-.quick-add-dot.kind-sink {
-    background: var(--kind-sink);
-}
-.quick-add-dot.kind-control {
-    background: var(--kind-control);
-}
-.quick-add-dot.kind-quality {
-    background: var(--kind-quality);
-}
-.quick-add-dot.kind-custom {
-    background: var(--kind-custom);
+    width: 15px;
+    height: 15px;
+    opacity: 0.9;
 }
 .quick-add-label {
     font-weight: 600;

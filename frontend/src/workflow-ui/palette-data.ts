@@ -689,6 +689,13 @@ export const PALETTE: Category[] = [
                     code('wasm', 'WebAssembly UDF', 'available', 'Per-row WASM transform via the pure-Rust wasmi interpreter (sandboxed - no fs / net / env access). Supply the module as `wasmB64` (base64) or `path` to a .wasm file. Module must export `memory` and a function `transform(i32, i32) -> i64` packing (out_ptr << 32) | out_len. Defaults: inputColumn=text, outputColumn=result, function=transform.'),
                 ],
             },
+            {
+                id: 'code.dbt',
+                label: 'dbt',
+                components: [
+                    xf('dbt', 'dbt', 'available', "Run dbt against the pipeline's DuckDB database. Either write one inline model right here (reference the upstream node as {{ var('duckle_input') }}), or set `projectDir` to an existing dbt project (folder with dbt_project.yml). The engine generates the dbt-duckdb profiles.yml automatically, so models read upstream node tables and downstream nodes read the models dbt builds. Set `command` (default `run`); optional `outputModel` reads a built model back as the node output. dbt is set up automatically on first launch, so no manual install is needed."),
+                ],
+            },
         ],
     },
     {

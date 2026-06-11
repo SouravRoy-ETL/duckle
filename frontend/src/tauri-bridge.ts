@@ -35,6 +35,9 @@ export type NodeRunStatus = {
     rows?: number;
     duration_ms?: number;
     error?: string;
+    /** Coarse error bucket (auth/network/timeout/oom/disk/schema/syntax/
+     *  cancelled/other) - present only when `error` is. */
+    category?: string;
 };
 
 export type NodePreview = {
@@ -55,6 +58,8 @@ export type RunResult = {
     nodes: Record<string, NodeRunStatus>;
     preview: NodePreview[];
     error?: string;
+    /** Coarse bucket of `error` (see NodeRunStatus.category). */
+    category?: string;
     /** Diagnostic lines from ctl.log / ctl.warn nodes, accumulated live
      *  from streamed `log` events (not part of the engine's RunResult). */
     messages?: RunLogLine[];
@@ -148,6 +153,8 @@ export type RunRecord = {
     node_count: number;
     trigger: string;
     error?: string;
+    /** Coarse error bucket (auth/network/timeout/oom/disk/schema/syntax/...). */
+    category?: string;
 };
 
 export async function runHistory(
@@ -164,6 +171,60 @@ export async function runHistory(
         console.warn('runHistory failed', err);
         return [];
     }
+}
+
+// ---- Backfill: xf.incremental / src.ducklake.changes saved state -------
+
+export type WatermarkEntry = {
+    node_id: string;
+    /** "incremental" (value + value_type) or "snapshot" (DuckLake CDC). */
+    kind: string;
+    value: string;
+    value_type?: string;
+};
+
+export async function watermarkList(
+    workspacePath: string,
+    pipelineName: string,
+): Promise<WatermarkEntry[]> {
+    if (!isTauri()) return [];
+    try {
+        return await invoke<WatermarkEntry[]>('watermark_list', {
+            workspacePath,
+            pipelineName,
+        });
+    } catch (err) {
+        console.warn('watermarkList failed', err);
+        return [];
+    }
+}
+
+export async function watermarkSet(
+    workspacePath: string,
+    pipelineName: string,
+    nodeId: string,
+    kind: string,
+    value: string,
+    valueType?: string,
+): Promise<void> {
+    if (!isTauri()) return;
+    await invoke('watermark_set', {
+        workspacePath,
+        pipelineName,
+        nodeId,
+        kind,
+        value,
+        valueType,
+    });
+}
+
+export async function watermarkClear(
+    workspacePath: string,
+    pipelineName: string,
+    nodeId: string,
+): Promise<void> {
+    if (!isTauri()) return;
+    await invoke('watermark_clear', { workspacePath, pipelineName, nodeId });
 }
 
 // ---- Engine install (first-run guided setup) ---------------------------

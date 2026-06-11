@@ -11,16 +11,17 @@ import type {
 import Canvas, { type DropPosition, type NodeAction, type PaneAction } from '../canvas/Canvas';
 import PlanView from './PlanView';
 import RunView from './RunView';
+import RunHistoryView from './RunHistoryView';
 import type { EngineId } from './EngineSelector';
 import type { DuckleNodeData } from '../pipeline-types';
 import type { ComponentDef } from './palette-data';
 import type { ConnectionType } from '../canvas/connection-types';
 import type { RunResult } from '../tauri-bridge';
 
-type TabId = 'canvas' | 'plan' | 'run';
+type TabId = 'canvas' | 'plan' | 'run' | 'history';
 
 // Tab labels resolved per-render via useTranslation; we keep just the IDs here.
-const TAB_IDS: TabId[] = ['canvas', 'plan', 'run'];
+const TAB_IDS: TabId[] = ['canvas', 'plan', 'run', 'history'];
 
 type Props = {
     engine: EngineId;
@@ -29,6 +30,8 @@ type Props = {
     runResult: RunResult | null;
     isRunning: boolean;
     nodeLabels: Record<string, string>;
+    workspacePath: string | null;
+    pipelineId: string | null;
     onNodesChange: (changes: NodeChange[]) => void;
     onEdgesChange: (changes: EdgeChange[]) => void;
     onConnectWithType: (connection: Connection, type: ConnectionType) => void;
@@ -50,6 +53,8 @@ export default function EditorTabs({
     runResult,
     isRunning,
     nodeLabels,
+    workspacePath,
+    pipelineId,
     onNodesChange,
     onEdgesChange,
     onConnectWithType,
@@ -78,7 +83,9 @@ export default function EditorTabs({
                         className="tab"
                         onClick={() => setActive(id)}
                     >
-                        {t(`editorTabs.${id}`)}
+                        {/* `history` is a newer tab not yet in every locale file;
+                            fall back to a readable English label when missing. */}
+                        {t(`editorTabs.${id}`, { defaultValue: id === 'history' ? 'History' : id })}
                     </button>
                 ))}
             </div>
@@ -87,6 +94,7 @@ export default function EditorTabs({
                     <Canvas
                         nodes={nodes}
                         edges={edges}
+                        pipelineId={pipelineId}
                         onNodesChange={onNodesChange}
                         onEdgesChange={onEdgesChange}
                         onConnectWithType={onConnectWithType}
@@ -110,6 +118,17 @@ export default function EditorTabs({
                         isRunning={isRunning}
                         nodeLabels={nodeLabels}
                     />
+                </div>
+                <div className={'tab-panel' + (active === 'history' ? ' tab-panel-active' : '')}>
+                    {/* Mount lazily so history only loads when the tab is opened;
+                        runResult identity changes after each run, triggering a reload. */}
+                    {active === 'history' ? (
+                        <RunHistoryView
+                            workspacePath={workspacePath}
+                            pipelineId={pipelineId}
+                            runResultKey={runResult?.duration_ms ?? 0}
+                        />
+                    ) : null}
                 </div>
             </div>
         </div>

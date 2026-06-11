@@ -23,6 +23,7 @@ type Props = {
     onDuplicateRepoItem: (id: string) => void;
     onDeleteRepoItem: (id: string) => void;
     onSchedulePipeline: (id: string) => void;
+    onBackfillPipeline: (id: string) => void;
     onBuildPipeline: (id: string) => void;
 };
 
@@ -42,6 +43,7 @@ export default function LeftSidebar({
     onDuplicateRepoItem,
     onDeleteRepoItem,
     onSchedulePipeline,
+    onBackfillPipeline,
     onBuildPipeline,
 }: Props) {
     const { t } = useTranslation();
@@ -91,6 +93,7 @@ export default function LeftSidebar({
                         onDuplicate={onDuplicateRepoItem}
                         onDelete={onDeleteRepoItem}
                         onSchedulePipeline={onSchedulePipeline}
+                        onBackfillPipeline={onBackfillPipeline}
                         onBuildPipeline={onBuildPipeline}
                     />
                 )}

@@ -44,7 +44,12 @@ export default function RunView({ runResult, isRunning, nodeLabels }: Props) {
                 </span>
             </div>
             {runResult.error ? (
-                <pre className="run-error-body">{runResult.error}</pre>
+                <pre className="run-error-body">
+                    {runResult.category ? (
+                        <span className="run-error-category">{runResult.category}</span>
+                    ) : null}
+                    {runResult.error}
+                </pre>
             ) : null}
             {runResult.messages && runResult.messages.length > 0 ? (
                 <ul className="run-messages">
@@ -80,7 +85,14 @@ export default function RunView({ runResult, isRunning, nodeLabels }: Props) {
                                     {nodeLabels[nodeId] ?? nodeId}
                                 </div>
                                 {st.error ? (
-                                    <div className="run-node-error">{st.error}</div>
+                                    <div className="run-node-error">
+                                        {st.category ? (
+                                            <span className="run-error-category">
+                                                {st.category}
+                                            </span>
+                                        ) : null}
+                                        {st.error}
+                                    </div>
                                 ) : null}
                             </td>
                             <td>{st.kind ?? ''}</td>
