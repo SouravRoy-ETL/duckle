@@ -20,13 +20,13 @@
 
 </div>
 
----
-
 <div align="center">
 
 <a href="https://discord.gg/VbSVt7Etx"><img src="docs/assets/discord-cta.svg" alt="Join the Duckle community on Discord" width="340"/></a>
 
 </div>
+
+---
 
 ## Quick links
 
