@@ -1884,6 +1884,7 @@ fn build_stage(
         }
         let inline_model_name = string_prop(&props, "modelName")
             .filter(|s| !s.trim().is_empty())
+            .map(|s| sanitize_dbt_model_name(&s))
             .unwrap_or_else(|| "duckle_model".into());
         // In inline mode the node's natural output is the model it just built,
         // so default outputModel to the model name when not set.

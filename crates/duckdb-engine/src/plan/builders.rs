@@ -393,10 +393,29 @@ pub(crate) fn build_custom_sql(inputs: &NodeInputs, props: &JsonValue) -> Result
     })
 }
 
+/// Sanitize an inline dbt model name to a safe SQL identifier. The same rule
+/// the scaffolder applies when it writes the model file, so the table dbt
+/// creates and the name the engine reads back (output_model) always agree -
+/// a name like "my-model" becomes "my_model" in both places, not a
+/// table-not-found on read-back.
+pub(crate) fn sanitize_dbt_model_name(name: &str) -> String {
+    let s: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .collect();
+    let s = s.trim_matches('_').to_string();
+    if s.is_empty() { "duckle_model".to_string() } else { s }
+}
+
 pub(crate) fn build_distinct(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
     let upstream = inputs.main().ok_or_else(|| "missing main input".to_string())?;
     let cols = columns_list(props, "columns");
     if cols.is_empty() {
+        // A bare DISTINCT has no per-group survivor to order, so an orderBy
+        // here would be silently ignored. Fail loud instead of dropping it.
+        if !columns_list(props, "orderBy").is_empty() {
+            return Err("distinct: orderBy needs the key columns to dedupe on - set 'columns', or clear orderBy".into());
+        }
         Ok(format!("SELECT DISTINCT * FROM {}", quote_ident(upstream)))
     } else {
         let on = cols.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
@@ -3424,7 +3443,7 @@ pub(crate) fn bigquery_attach(props: &JsonValue, read_only: bool) -> String {
     // DuckDB to fetch from the community-extensions repo.
     format!(
         "INSTALL bigquery FROM community; LOAD bigquery; ATTACH '{}' AS {} (TYPE bigquery{}); ",
-        attach_target, alias, mode
+        sql_escape(&attach_target), alias, mode
     )
 }
 
@@ -5153,7 +5172,10 @@ pub(crate) fn build_cloud_source(
     }
     match chosen.as_str() {
         "parquet" => build_parquet_source(&local),
-        "json" => format!("SELECT * FROM read_json_auto('{}')", sql_escape(&path)),
+        // Delegate JSON too, so a cloud JSON source gets recordsPath unnesting
+        // and the 100 MB maximum_object_size that the local builder applies
+        // (a bare read_json_auto here ignored both - audit).
+        "json" => build_json_source(&local),
         "tsv" => build_tsv_source(&local, declared),
         _ => build_csv_source(&local, declared),
     }

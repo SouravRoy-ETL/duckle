@@ -4878,6 +4878,11 @@ impl DuckdbEngine {
             );
             rows.push(JsonValue::Object(obj));
         }
+        let count = rows.len();
+        // Persist BEFORE acknowledging: if materialize fails, the messages
+        // stay queued and redeliver on their visibility timeout rather than
+        // being acked-then-lost.
+        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         // Acknowledge the batch so messages don't redeliver. Failure
         // is non-fatal - the messages stay queued and re-deliver on
         // their visibility timeout.
@@ -4892,8 +4897,6 @@ impl DuckdbEngine {
                 .set("Authorization", &format!("Bearer {}", spec.access_token))
                 .send_string(&serde_json::to_string(&ack_body).unwrap_or_default());
         }
-        let count = rows.len();
-        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "pubsub: materialized {} message(s) into {}",
             count, spec.node_id
@@ -5943,6 +5946,9 @@ impl DuckdbEngine {
                         };
                         match located {
                             Some(JsonValue::Array(a)) => a.clone(),
+                            // An empty object means "no data" (like []), not a
+                            // single empty row.
+                            Some(JsonValue::Object(o)) if o.is_empty() => Vec::new(),
                             Some(v @ JsonValue::Object(_)) => vec![v.clone()],
                             _ => Vec::new(),
                         }
@@ -6966,14 +6972,9 @@ fn scaffold_inline_dbt_project(
     model_name: &str,
     model_sql: &str,
 ) -> std::io::Result<std::path::PathBuf> {
-    let safe_model: String = {
-        let s: String = model_name
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
-            .collect();
-        let s = s.trim_matches('_').to_string();
-        if s.is_empty() { "duckle_model".to_string() } else { s }
-    };
+    // Same rule the planner uses for output_model (plan::sanitize_dbt_model_name)
+    // so the table written here and the name the engine reads back agree.
+    let safe_model: String = plan::sanitize_dbt_model_name(model_name);
     // Stable per-node project dir (NOT process-id keyed) so dbt's
     // target/partial_parse.msgpack survives across app launches. dbt-core's
     // parse is the dominant cost of an inline run; a warm partial-parse cache

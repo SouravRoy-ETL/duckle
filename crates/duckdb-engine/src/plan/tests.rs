@@ -1926,3 +1926,36 @@
         );
         assert!(!typed.contains("junk"), "non-declared column leaked: {}", typed);
     }
+
+    #[test]
+    fn dbt_model_name_sanitized_consistently() {
+        // The planner and the inline-project scaffolder must agree on the table
+        // name, or the engine reads back a name dbt never created.
+        assert_eq!(sanitize_dbt_model_name("my-model"), "my_model");
+        assert_eq!(sanitize_dbt_model_name("test.model v2"), "test_model_v2");
+        assert_eq!(sanitize_dbt_model_name("--weird--"), "weird");
+        assert_eq!(sanitize_dbt_model_name(""), "duckle_model");
+        assert_eq!(sanitize_dbt_model_name("ok_name"), "ok_name");
+    }
+
+    #[test]
+    fn distinct_orderby_without_columns_errors() {
+        // orderBy with no key columns would be silently dropped by a bare
+        // DISTINCT - the planner must reject it instead.
+        let doc = pipeline_from_json(
+            r#"{"name":"t","nodes":[
+                {"id":"s","type":"source","position":{"x":0,"y":0},"data":{"label":"s","componentId":"src.csv","properties":{"path":"x.csv"}}},
+                {"id":"d","type":"transform","position":{"x":0,"y":0},"data":{"label":"d","componentId":"xf.distinct","properties":{"orderBy":["a"]}}},
+                {"id":"k","type":"sink","position":{"x":0,"y":0},"data":{"label":"k","componentId":"snk.csv","properties":{"path":"o.csv"}}}
+            ],"edges":[
+                {"id":"e1","source":"s","target":"d","sourceHandle":"main","targetHandle":"main","data":{"connectionType":"main"}},
+                {"id":"e2","source":"d","target":"k","sourceHandle":"main","targetHandle":"main","data":{"connectionType":"main"}}
+            ]}"#,
+        );
+        let err = compile(&doc).unwrap_err();
+        assert!(
+            format!("{:?}", err).contains("orderBy"),
+            "expected an orderBy validation error, got {:?}",
+            err
+        );
+    }
