@@ -2507,13 +2507,11 @@ pub(crate) fn referenced_lookup_ports(expr: &str) -> std::collections::BTreeSet<
         };
         if !prev_ident && (c.is_ascii_alphabetic() || c == '_') {
             let start = i;
-            while i < bytes.len() {
-                let ch = bytes[i] as char;
-                if ch.is_alphanumeric() || ch == '_' {
-                    i += 1;
-                } else {
-                    break;
-                }
+            // Consume only ASCII identifier bytes so `i` stays on a char
+            // boundary - `bytes[i] as char` treats a multibyte lead byte as
+            // alphanumeric and would slice mid-char (panic) below.
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
             }
             let ident = &expr[start..i];
             if ident.starts_with("lookup") && i < bytes.len() && bytes[i] == b'.' {
@@ -2567,13 +2565,11 @@ pub(crate) fn qualify_port_refs(
         };
         if !prev_ident && (c.is_ascii_alphabetic() || c == '_') {
             let start = i;
-            while i < bytes.len() {
-                let ch = bytes[i] as char;
-                if ch.is_alphanumeric() || ch == '_' {
-                    i += 1;
-                } else {
-                    break;
-                }
+            // Consume only ASCII identifier bytes so `i` stays on a char
+            // boundary - `bytes[i] as char` treats a multibyte lead byte as
+            // alphanumeric and would slice mid-char (panic) below.
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
             }
             let ident = &expr[start..i];
             // A `<port>.<col>` reference: rewrite to alias + quoted column.
@@ -2582,13 +2578,9 @@ pub(crate) fn qualify_port_refs(
                     // Consume the dot + the following column identifier.
                     let mut j = i + 1;
                     let col_start = j;
-                    while j < bytes.len() {
-                        let ch = bytes[j] as char;
-                        if ch.is_alphanumeric() || ch == '_' {
-                            j += 1;
-                        } else {
-                            break;
-                        }
+                    // ASCII-only so `&expr[col_start..j]` stays char-safe.
+                    while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                        j += 1;
                     }
                     if j > col_start {
                         let col = &expr[col_start..j];

@@ -217,7 +217,8 @@ pub fn clone(parent: &Path, url: &str, folder_name: &str) -> GitResult<PathBuf> 
     }
     let dest = parent.join(folder_name);
     let out = git_cmd(parent)
-        .args(["clone", url, folder_name])
+        // `--` stops a url/folder starting with `-` being read as an option.
+        .args(["clone", "--", url, folder_name])
         .output()
         .map_err(|e| format!("spawn git clone: {}", e))?;
     if !out.status.success() {
@@ -324,12 +325,17 @@ pub fn branches(workspace: &Path) -> GitResult<Vec<String>> {
 }
 
 pub fn branch_create(workspace: &Path, name: &str) -> GitResult<()> {
+    // `git checkout -b -- <name>` is invalid, so guard the name instead of
+    // using `--`: a leading dash would otherwise be parsed as an option.
+    if name.starts_with('-') {
+        return Err(format!("invalid branch name: {}", name));
+    }
     run_git(workspace, &["checkout", "-b", name])?;
     Ok(())
 }
 
 pub fn branch_checkout(workspace: &Path, name: &str) -> GitResult<()> {
-    run_git(workspace, &["checkout", name])?;
+    run_git(workspace, &["checkout", "--", name])?;
     Ok(())
 }
 

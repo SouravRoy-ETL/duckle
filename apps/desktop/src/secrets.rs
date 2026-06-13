@@ -54,12 +54,23 @@ pub(crate) fn workspace_key(workspace: &Path, create: bool) -> Result<[u8; 32], 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create keys dir: {}", e))?;
     }
-    std::fs::write(&path, k).map_err(|e| format!("write key: {}", e))?;
+    // Create the key file owner-only from the start; writing first and
+    // chmod'ing after left a brief world-readable window (TOCTOU).
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|e| format!("create key: {}", e))?;
+        f.write_all(&k).map_err(|e| format!("write key: {}", e))?;
     }
+    #[cfg(not(unix))]
+    std::fs::write(&path, k).map_err(|e| format!("write key: {}", e))?;
     Ok(k)
 }
 
@@ -104,7 +115,7 @@ pub(crate) fn decrypt_value(key: &[u8; 32], blob: &str) -> Result<String, String
 
 /// Walk a JSON value, encrypting or decrypting the sensitive string fields in
 /// place. Already-encrypted values and `${...}` placeholders are left alone.
-fn transform(value: &mut serde_json::Value, key: &[u8; 32], encrypting: bool) {
+fn transform(value: &mut serde_json::Value, key: &[u8; 32], encrypting: bool) -> Result<(), String> {
     match value {
         serde_json::Value::Object(map) => {
             for (k, v) in map.iter_mut() {
@@ -115,27 +126,31 @@ fn transform(value: &mut serde_json::Value, key: &[u8; 32], encrypting: bool) {
                             && !is_encrypted(s)
                             && !s.starts_with("${")
                         {
-                            if let Ok(enc) = encrypt_value(key, s) {
-                                *v = serde_json::Value::String(enc);
-                            }
+                            // Propagate: never silently leave a secret in
+                            // plaintext (the file is meant to hold ciphertext).
+                            let enc = encrypt_value(key, s)?;
+                            *v = serde_json::Value::String(enc);
                         }
                     } else if is_encrypted(s) {
+                        // Decrypt stays lenient: a missing/legacy value loads
+                        // unchanged rather than failing the read.
                         if let Ok(dec) = decrypt_value(key, s) {
                             *v = serde_json::Value::String(dec);
                         }
                     }
                 } else {
-                    transform(v, key, encrypting);
+                    transform(v, key, encrypting)?;
                 }
             }
         }
         serde_json::Value::Array(arr) => {
             for v in arr.iter_mut() {
-                transform(v, key, encrypting);
+                transform(v, key, encrypting)?;
             }
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// Encrypt the sensitive fields of a connection payload JSON before it is
@@ -145,7 +160,7 @@ pub fn connection_encrypt_payload(workspace: String, payload_json: String) -> Re
     let key = workspace_key(Path::new(&workspace), true)?;
     let mut v: serde_json::Value =
         serde_json::from_str(&payload_json).map_err(|e| format!("json: {}", e))?;
-    transform(&mut v, &key, true);
+    transform(&mut v, &key, true)?;
     serde_json::to_string(&v).map_err(|e| format!("json: {}", e))
 }
 
@@ -160,7 +175,7 @@ pub fn connection_decrypt_payload(workspace: String, payload_json: String) -> Re
     };
     let mut v: serde_json::Value =
         serde_json::from_str(&payload_json).map_err(|e| format!("json: {}", e))?;
-    transform(&mut v, &key, false);
+    transform(&mut v, &key, false)?;
     serde_json::to_string(&v).map_err(|e| format!("json: {}", e))
 }
 

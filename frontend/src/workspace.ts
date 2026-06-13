@@ -228,14 +228,24 @@ async function loadAndMigrateV1(path: string): Promise<WorkspaceState | null> {
         const { writeTextFile, exists, remove } = await fs();
         const backup = joinPath(path, `${V1_FILE}.v1.bak`);
         await writeTextFile(backup, JSON.stringify(v1, null, 2));
-        if (await exists(v1Path)) {
-            try {
-                await remove(v1Path);
-            } catch {
-                /* leave it if we can't remove */
+        // saveAll's callees swallow their own errors, so verify the v2 files
+        // actually landed before deleting v1.json - otherwise a partial write
+        // would orphan the data (loadV2 reads duckle.json + repository.json,
+        // not the .bak), leaving the workspace looking empty.
+        const metaOk = (await readJsonIfExists(joinPath(path, METADATA_FILE))) !== null;
+        const repoOk = (await readJsonIfExists(joinPath(path, REPOSITORY_FILE))) !== null;
+        if (metaOk && repoOk) {
+            if (await exists(v1Path)) {
+                try {
+                    await remove(v1Path);
+                } catch {
+                    /* leave it if we can't remove */
+                }
             }
+            console.info('Migrated workspace from v1 -> v2');
+        } else {
+            console.warn('Migration incomplete (v2 files missing); kept workspace.json');
         }
-        console.info('Migrated workspace from v1 -> v2');
     } catch (err) {
         console.warn('Migration failed; loading v1 in-memory only', err);
     }

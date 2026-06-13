@@ -1177,12 +1177,20 @@ fn mcp_inject_config(app: tauri::AppHandle, client: String) -> Result<String, St
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {}", parent.display(), e))?;
     }
     let pretty = serde_json::to_string_pretty(&root).map_err(|e| e.to_string())?;
-    std::fs::write(&target, pretty).map_err(|e| {
+    // Write to a sibling temp file then rename over the original so a mid-write
+    // failure can't truncate the user's existing MCP client config.
+    let tmp = target.with_extension(format!("duckletmp{}", std::process::id()));
+    let write_err = |e: std::io::Error| {
         format!(
             "could not write {} ({}). If this needs elevated permissions, run Duckle as administrator and retry, or copy the config manually.",
             target.display(),
             e
         )
+    };
+    std::fs::write(&tmp, pretty).map_err(write_err)?;
+    std::fs::rename(&tmp, &target).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        write_err(e)
     })?;
     Ok(target.to_string_lossy().to_string())
 }
