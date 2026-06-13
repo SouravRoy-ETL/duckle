@@ -349,6 +349,13 @@ export default function App() {
                 for (const [id, state] of Object.entries(pipelineData)) {
                     if (prev[id] !== state) {
                         await savePipelineFile(ws, id, state);
+                        // Clear the per-tab dirty flag now that it's persisted
+                        // (guard so we don't trigger a render when nothing's dirty).
+                        setJobs(js =>
+                            js.some(j => j.id === id && j.dirty)
+                                ? js.map(j => (j.id === id ? { ...j, dirty: false } : j))
+                                : js,
+                        );
                     }
                 }
                 prevPipelineDataRef.current = pipelineData;
@@ -465,6 +472,10 @@ export default function App() {
         setRepo(INITIAL_REPO);
         setJobs(INITIAL_JOBS);
         setActiveJobId('j1');
+        // Drop the save-diff baselines so the first save after the switch
+        // diffs against the freshly loaded workspace, not the old one.
+        prevPipelineDataRef.current = null;
+        prevRepoRef.current = null;
         setWorkspacePath(picked);
         setWorkspacePathState(picked);
     }, [workspacePathState]);
@@ -1459,7 +1470,7 @@ export default function App() {
         (raw: unknown) => {
             if (!raw || typeof raw !== 'object') return;
             const obj = raw as {
-                nodes?: Array<{ id?: string; type?: string; data?: { label?: string; props?: unknown } }>;
+                nodes?: Array<{ id?: string; type?: string; data?: { label?: string; properties?: unknown } }>;
                 edges?: Array<{ id?: string; source?: string; target?: string }>;
             };
             if (!Array.isArray(obj.nodes)) return;
@@ -1470,7 +1481,7 @@ export default function App() {
                 data: {
                     label: n.data?.label ?? (n.type ?? 'Node').replace(/^[^.]+\./, ''),
                     componentId: n.type ?? 'src.csv',
-                    props: (n.data?.props as Record<string, unknown> | undefined) ?? {},
+                    properties: (n.data?.properties as Record<string, unknown> | undefined) ?? {},
                 } as DuckleNodeData,
             }));
             const edges: Edge[] = (obj.edges ?? []).map((e, i) => ({

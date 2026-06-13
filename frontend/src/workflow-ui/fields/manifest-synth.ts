@@ -1860,10 +1860,8 @@ function synthApiSource(comp: ComponentDef): ComponentManifest {
                     defaultValue: 'none',
                     options: [
                         { label: 'None', value: 'none' },
-                        { label: 'Basic', value: 'basic' },
                         { label: 'Bearer token', value: 'bearer' },
                         { label: 'API key (header)', value: 'apikey' },
-                        { label: 'OAuth2', value: 'oauth2' },
                     ],
                 },
                 { key: 'authToken', label: 'Token / API key', kind: 'text', placeholder: '••••••••' },
