@@ -354,6 +354,19 @@ impl DuckdbEngine {
                             err
                         )));
                     }
+                    // A statement that exceeds the inline timeout escalates to
+                    // async: the body carries a statementHandle and no `data`.
+                    // Poll it to completion so a still-running (or later failed)
+                    // write isn't counted as a successful insert.
+                    let parsed: JsonValue =
+                        serde_json::from_str(&txt).unwrap_or(JsonValue::Null);
+                    if parsed.get("data").is_none() {
+                        if let Some(handle) =
+                            parsed.get("statementHandle").and_then(|v| v.as_str())
+                        {
+                            poll_snowflake_until_done(&url, &auth_header, is_jwt, handle)?;
+                        }
+                    }
                     Ok(())
                 }
                 Err(ureq::Error::Status(code, response)) => {
@@ -5974,6 +5987,13 @@ impl DuckdbEngine {
             RestPagination::Page { start_page, .. } => *start_page,
             _ => 1,
         };
+        // Seed the FIRST request with the start page; the loop only appends the
+        // page param on subsequent requests, so without this the first call hit
+        // the server's default page and a non-default start_page was skipped.
+        if let RestPagination::Page { page_param, start_page } = &spec.pagination {
+            let sep = if url.contains('?') { '&' } else { '?' };
+            url = format!("{}{}{}={}", url, sep, page_param, start_page);
+        }
         // One Agent for the whole pagination walk so keep-alive connections
         // are reused across pages instead of a fresh TCP+TLS handshake each
         // request (ureq::request uses a throwaway agent per call).
