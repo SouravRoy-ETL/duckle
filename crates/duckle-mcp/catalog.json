@@ -5618,7 +5618,7 @@
                 "key": "offset",
                 "label": "Initial offset",
                 "kind": "select",
-                "defaultValue": "latest",
+                "defaultValue": "earliest",
                 "options": [
                   {
                     "label": "Latest",
@@ -5785,7 +5785,7 @@
                 "key": "offset",
                 "label": "Initial offset",
                 "kind": "select",
-                "defaultValue": "latest",
+                "defaultValue": "earliest",
                 "options": [
                   {
                     "label": "Latest",
@@ -5952,7 +5952,7 @@
                 "key": "offset",
                 "label": "Initial offset",
                 "kind": "select",
-                "defaultValue": "latest",
+                "defaultValue": "earliest",
                 "options": [
                   {
                     "label": "Latest",
@@ -6119,7 +6119,7 @@
                 "key": "offset",
                 "label": "Initial offset",
                 "kind": "select",
-                "defaultValue": "latest",
+                "defaultValue": "earliest",
                 "options": [
                   {
                     "label": "Latest",
@@ -6286,7 +6286,7 @@
                 "key": "offset",
                 "label": "Initial offset",
                 "kind": "select",
-                "defaultValue": "latest",
+                "defaultValue": "earliest",
                 "options": [
                   {
                     "label": "Latest",
@@ -6453,7 +6453,7 @@
                 "key": "offset",
                 "label": "Initial offset",
                 "kind": "select",
-                "defaultValue": "latest",
+                "defaultValue": "earliest",
                 "options": [
                   {
                     "label": "Latest",
@@ -6620,7 +6620,7 @@
                 "key": "offset",
                 "label": "Initial offset",
                 "kind": "select",
-                "defaultValue": "latest",
+                "defaultValue": "earliest",
                 "options": [
                   {
                     "label": "Latest",
@@ -6787,7 +6787,7 @@
                 "key": "offset",
                 "label": "Initial offset",
                 "kind": "select",
-                "defaultValue": "latest",
+                "defaultValue": "earliest",
                 "options": [
                   {
                     "label": "Latest",

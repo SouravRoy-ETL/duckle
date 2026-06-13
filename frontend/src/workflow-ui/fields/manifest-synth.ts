@@ -1733,9 +1733,14 @@ function synthStreamingSource(comp: ComponentDef): ComponentManifest {
                 { key: 'groupId', label: 'Consumer group', kind: 'text', placeholder: 'duckle-group' },
                 {
                     key: 'offset',
+                    // Default earliest: this is a batch ETL connector (capped by
+                    // maxRecords), so a fresh run should read the available
+                    // backlog, not start at the tip and see ~nothing. This also
+                    // matches the engine's absent-offset default, so an untouched
+                    // node's displayed default and its actual behavior agree.
                     label: 'Initial offset',
                     kind: 'select',
-                    defaultValue: 'latest',
+                    defaultValue: 'earliest',
                     options: [
                         { label: 'Latest', value: 'latest' },
                         { label: 'Earliest', value: 'earliest' },
