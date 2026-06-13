@@ -9564,6 +9564,91 @@ fn incremental_load_advances_watermark_across_runs() {
 }
 
 #[test]
+fn partial_run_does_not_persist_incremental_watermark() {
+    // audit pass-3: a partial "Run from here" loads rows into a throwaway temp
+    // DB and may stop before the sink, so it MUST NOT advance/persist the
+    // incremental watermark - else the next full run would skip rows that were
+    // never written anywhere.
+    let _env = env_guard();
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path();
+    let csv = out_path(ws, "in.csv");
+    let out = out_path(ws, "out.csv");
+    let pipeline = json!([
+        node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+        node("inc", "xf.incremental", json!({ "column": "id" })),
+        node("k", "snk.csv", json!({ "path": out, "hasHeader": true, "mode": "overwrite" })),
+    ]);
+    let edges = json!([main_edge("e1", "s", "inc"), main_edge("e2", "inc", "k")]);
+    std::env::set_var("DUCKLE_WORKSPACE", ws);
+    std::fs::write(&csv, "id\n1\n2\n3\n").unwrap();
+
+    let state = std::path::Path::new(ws).join("state").join("PartialInc").join("inc.json");
+
+    // Partial run up to (and including) the incremental node - no sink.
+    let rp = engine.execute_pipeline_with_events(
+        &doc(pipeline.clone(), edges.clone()),
+        Some("inc"),
+        Some("PartialInc"),
+        |_| {},
+    );
+    assert_eq!(rp.status, "ok", "partial run failed: {:?}", rp.error);
+    assert!(
+        !state.exists(),
+        "partial run must not persist the watermark, but {} exists: {:?}",
+        state.display(),
+        std::fs::read_to_string(&state).ok()
+    );
+
+    // A subsequent FULL run must therefore still load ALL rows (the watermark
+    // was never set by the partial run).
+    let rf = engine.execute_pipeline_named(&doc(pipeline.clone(), edges.clone()), "PartialInc");
+    std::env::remove_var("DUCKLE_WORKSPACE");
+    assert_eq!(rf.status, "ok", "full run failed: {:?}", rf.error);
+    assert_eq!(
+        count(&format!("read_csv_auto('{}')", out)),
+        3,
+        "full run after a partial preview must load all rows, not skip any"
+    );
+}
+
+#[test]
+fn batched_view_row_error_is_attributed_to_the_view_not_the_sink() {
+    // audit pass-3: in the batched executor a view whose body errors on
+    // full-row evaluation (here a failing CAST) used to be reported "ok" -
+    // its COUNT(*) marker pruned the projection and landed, advancing the
+    // completed cursor - while the -bail abort on the row-evaluating preview
+    // got mis-attributed to the downstream sink, which never ran. The failure
+    // must land on the offending view, not the sink.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "s\n1\nnotanumber\n3\n");
+    let out = out_path(tmp.path(), "out.csv");
+    let r = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("c", "xf.addcol", json!({ "name": "n", "expression": "CAST(\"s\" AS INTEGER)" })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "c"), main_edge("e2", "c", "k")]),
+    ));
+    assert_eq!(r.status, "error", "the failing CAST must fail the run: {:?}", r.error);
+    assert_eq!(
+        r.nodes.get("c").map(|n| n.status.as_str()),
+        Some("error"),
+        "the addcol view must be the blamed stage, nodes={:?}",
+        r.nodes
+    );
+    assert_ne!(
+        r.nodes.get("k").map(|n| n.status.as_str()),
+        Some("error"),
+        "the sink must not be blamed for the view's error, nodes={:?}",
+        r.nodes
+    );
+}
+
+#[test]
 fn ducklake_cdc_reads_incremental_changes() {
     // src.ducklake.changes reads DuckLake's change feed since the last
     // consumed snapshot (saved in workspace state). First run sees all

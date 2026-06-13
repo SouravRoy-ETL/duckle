@@ -1051,10 +1051,14 @@ impl DuckdbEngine {
             "ok"
         };
 
-        // Persist xf.incremental high-water marks ONLY on a fully successful
-        // run. If anything failed or was cancelled we drop them, so the next
-        // run re-reads the same window rather than skipping undelivered rows.
-        if final_status == "ok" {
+        // Persist xf.incremental / DuckLake-CDC high-water marks ONLY on a
+        // fully successful, FULL run. If anything failed or was cancelled we
+        // drop them, so the next run re-reads the same window rather than
+        // skipping undelivered rows. We also skip a partial "Run from here"
+        // run (target.is_some()): it loads rows into a throwaway temp DB and
+        // may stop before the sink, so advancing the watermark there would make
+        // the next full run skip rows that were never written to any sink.
+        if final_status == "ok" && target.is_none() {
             for (path, value) in &pending_watermarks {
                 if let Some(parent) = path.parent() {
                     let _ = std::fs::create_dir_all(parent);
@@ -1246,6 +1250,44 @@ impl DuckdbEngine {
             // ATTACH view; the binder bug above otherwise aborts the
             // batch.
             let count_target = count_target.filter(|t| !extension_node_ids.contains(t));
+            // Preview is emitted BEFORE the count marker (below) for view
+            // stages, and only if querying the view for preview rows wouldn't
+            // trigger an eager-evaluation problem. We accept the cost here
+            // because the preview is the user-visible payoff for batched mode;
+            // users would lose it otherwise. Skip preview for components that
+            // don't produce <node> and for xf.assert (where the predicate check
+            // would fire here rather than at the downstream sink).
+            if matches!(stage.kind, plan::StageKind::View)
+                && stage.component_id != "ctl.switch"
+                && stage.component_id != "xf.assert"
+                && !extension_node_ids.contains(stage.node_id.as_str())
+            {
+                let schema = marker_dir.join(format!("{}_schema.json", i));
+                let rows = marker_dir.join(format!("{}_rows.json", i));
+                batched_sql.push_str(&format!(
+                    "COPY (SELECT * FROM (DESCRIBE {})) TO '{}' (FORMAT 'json', ARRAY false);\n",
+                    plan::quote_ident(&stage.node_id),
+                    path_to_sql(&schema),
+                ));
+                batched_sql.push_str(&format!(
+                    "COPY (SELECT * FROM {} LIMIT {}) TO '{}' (FORMAT 'json', ARRAY false);\n",
+                    plan::quote_ident(&stage.node_id),
+                    PREVIEW_ROW_LIMIT,
+                    path_to_sql(&rows),
+                ));
+            }
+            // The count marker (<i>.json) is the per-stage "done" signal that
+            // drain_batched_markers uses to mark stage i "ok" and advance
+            // `completed`, so it MUST be the LAST statement for the stage -
+            // emitted only after the row-evaluating preview SELECT above has
+            // succeeded. Otherwise, because COUNT(*) lets DuckDB prune the
+            // projection, the marker would land even when the view body errors
+            // on full-row evaluation (e.g. a divide-by-zero / failed CAST on
+            // some row): `completed` would advance past stage i, the preview
+            // SELECT would then fail and -bail would abort the batch, and the
+            // failure would be mis-attributed to the next (downstream) stage
+            // while the real culprit showed as "ok" (audit).
+            //
             // Marker shape is just `SELECT COUNT(*) AS _duckle_r FROM <t>`
             // (or `SELECT NULL AS _duckle_r` when there's no countable
             // target). No string-literal projected alongside the
@@ -1266,36 +1308,6 @@ impl DuckdbEngine {
                     "COPY (SELECT NULL AS _duckle_r) TO '{}' (FORMAT 'json', ARRAY false);\n",
                     path_to_sql(&marker),
                 )),
-            }
-            // Preview only for view stages, and only if querying the view
-            // for preview rows wouldn't trigger the same eager-evaluation
-            // problem the row-count subquery just dodged. We accept the
-            // cost here because the preview is the user-visible payoff
-            // for the batched mode; users would lose it otherwise. If
-            // the preview query fails (assert / switch / etc.), -bail
-            // aborts the batch and we attribute the failure to this
-            // stage - same as per-stage would for the same reason. So:
-            // skip preview for components that don't produce <node> and
-            // for xf.assert (where the predicate check would fire here
-            // rather than at the downstream sink).
-            if matches!(stage.kind, plan::StageKind::View)
-                && stage.component_id != "ctl.switch"
-                && stage.component_id != "xf.assert"
-                && !extension_node_ids.contains(stage.node_id.as_str())
-            {
-                let schema = marker_dir.join(format!("{}_schema.json", i));
-                let rows = marker_dir.join(format!("{}_rows.json", i));
-                batched_sql.push_str(&format!(
-                    "COPY (SELECT * FROM (DESCRIBE {})) TO '{}' (FORMAT 'json', ARRAY false);\n",
-                    plan::quote_ident(&stage.node_id),
-                    path_to_sql(&schema),
-                ));
-                batched_sql.push_str(&format!(
-                    "COPY (SELECT * FROM {} LIMIT {}) TO '{}' (FORMAT 'json', ARRAY false);\n",
-                    plan::quote_ident(&stage.node_id),
-                    PREVIEW_ROW_LIMIT,
-                    path_to_sql(&rows),
-                ));
             }
         }
 
