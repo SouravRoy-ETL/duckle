@@ -2748,6 +2748,7 @@ function synthWindowTransform(comp: ComponentDef): ComponentManifest {
                 },
                 { key: 'targetColumn', label: 'Target column (lead/lag/first/last)', kind: 'column' },
                 { key: 'offset', label: 'Offset (lead/lag)', kind: 'integer', defaultValue: 1 },
+                { key: 'ntileBuckets', label: 'Buckets (ntile)', kind: 'integer', defaultValue: 4 },
             ],
         },
         {
@@ -2755,12 +2756,6 @@ function synthWindowTransform(comp: ComponentDef): ComponentManifest {
             fields: [
                 { key: 'partitionBy', label: 'Partition by', kind: 'columns' },
                 { key: 'orderBy', label: 'Order by', kind: 'columns' },
-                {
-                    key: 'frame',
-                    label: 'Frame',
-                    kind: 'text',
-                    placeholder: 'ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW',
-                },
             ],
         },
         { label: 'Output', fields: [{ key: 'outputName', label: 'Output column name', kind: 'text', required: true, placeholder: 'row_num' }] },

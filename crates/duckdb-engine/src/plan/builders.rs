@@ -763,7 +763,10 @@ pub(crate) fn build_setop(inputs: &NodeInputs, op: &str) -> Result<String, Strin
     if mains.len() < 2 {
         return Err(format!("{} needs two inputs", op));
     }
-    let sep = format!(" {} ", op);
+    // Match by column NAME, not position, mirroring build_union's UNION ALL BY
+    // NAME - otherwise INTERSECT/EXCEPT silently compare the wrong columns when
+    // the two inputs have a different column order.
+    let sep = format!(" {} BY NAME ", op);
     Ok(mains
         .iter()
         .map(|id| format!("SELECT * FROM {}", quote_ident(id)))
@@ -795,7 +798,19 @@ pub(crate) fn build_window(
         "lag" => format!("LAG({}, {})", need_target("lag")?, offset),
         "first" => format!("FIRST_VALUE({})", need_target("first")?),
         "last" => format!("LAST_VALUE({})", need_target("last")?),
-        "ntile" => format!("NTILE({})", offset.max(1)),
+        "ntile" => {
+            // NTILE needs its own bucket count, not the lead/lag offset (which
+            // defaults to 1 -> a single useless bucket).
+            let buckets = props
+                .get("ntileBuckets")
+                .or_else(|| props.get("buckets"))
+                .and_then(JsonValue::as_u64)
+                .unwrap_or(4);
+            if buckets < 1 {
+                return Err("NTILE needs a bucket count of at least 1".to_string());
+            }
+            format!("NTILE({})", buckets)
+        }
         other => return Err(format!("Unknown window function '{}'", other)),
     };
     let partition = columns_list(props, "partitionBy");
@@ -4291,9 +4306,17 @@ pub(crate) fn build_rank_filter(inputs: &NodeInputs, props: &JsonValue) -> Resul
         .and_then(|v| v.as_i64())
         .filter(|n| *n > 0)
         .unwrap_or(10);
+    // The UI's Direction select stores "true"/"false" as a STRING, so reading
+    // only as a JSON bool ignored the user's choice (always DESC). Accept both.
     let desc = props
         .get("desc")
         .and_then(|v| v.as_bool())
+        .or_else(|| {
+            props
+                .get("desc")
+                .and_then(|v| v.as_str())
+                .map(|s| !s.eq_ignore_ascii_case("false") && s != "0")
+        })
         .unwrap_or(true);
     let direction = if desc { "DESC" } else { "ASC" };
     let partition_clause = if partition.is_empty() {
