@@ -394,7 +394,7 @@ pre code { background: none; border: none; padding: 0; color: var(--code-ink); }
    and the integrations graph (central mark + logo nodes).
    ============================================================ */
 .announce { background: #0d0d0d; color: #f3f4f6; font-size: .87rem; font-weight: 500; text-align: center; padding: 9px 18px; }
-.announce a { color: #fff; font-weight: 650; display: inline-flex; align-items: center; gap: 5px; }
+.announce a { color: var(--lemon); font-weight: 650; display: inline-flex; align-items: center; gap: 5px; }
 .announce a:hover { text-decoration: underline; }
 .announce a svg { width: 14px; height: 14px; }
 :root[data-theme="dark"] .announce { background: #05070c; border-bottom: 1px solid var(--border); }
@@ -428,8 +428,16 @@ pre code { background: none; border: none; padding: 0; color: var(--code-ink); }
 .hgraph .lines line { stroke: var(--border-2); stroke-width: 1.4; }
 .hgraph .lines circle { fill: var(--gold); }
 .hg-el { position: absolute; transform: translate(-50%, -50%); }
-.hg-center { width: 112px; height: 112px; border-radius: 50%; background: transparent; border: none; box-shadow: 0 0 0 8px rgba(255, 241, 0, .05), 0 18px 44px rgba(0, 0, 0, .45); display: flex; align-items: center; justify-content: center; z-index: 4; }
+.hg-center { width: 112px; height: 112px; border-radius: 50%; background: transparent; border: none; box-shadow: 0 18px 44px rgba(0, 0, 0, .35); display: flex; align-items: center; justify-content: center; z-index: 4; animation: hgpulse 3.4s ease-in-out infinite; }
 .hg-center img { width: 112px; height: 112px; }
+@keyframes hgpulse {
+    0%, 100% { box-shadow: 0 0 0 5px rgba(255, 241, 0, .06), 0 0 18px 2px rgba(255, 241, 0, .12), 0 18px 44px rgba(0, 0, 0, .35); }
+    50%      { box-shadow: 0 0 0 12px rgba(255, 241, 0, .12), 0 0 42px 8px rgba(255, 241, 0, .34), 0 18px 44px rgba(0, 0, 0, .35); }
+}
+@media (prefers-reduced-motion: reduce) { .hg-center { animation: none; } }
+.hgraph .lines circle.flow { fill: var(--gold); }
+:root[data-theme="dark"] .hgraph .lines circle.flow { fill: var(--lemon); }
+@media (prefers-reduced-motion: reduce) { .hgraph .lines circle.flow { display: none; } }
 .hg-group { background: var(--panel); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); padding: 12px 12px 9px; z-index: 3; }
 .hg-group .grow { display: flex; gap: 8px; }
 .hg-group .glbl { text-align: center; font-size: 9.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); margin-top: 9px; }
@@ -439,8 +447,9 @@ pre code { background: none; border: none; padding: 0; color: var(--code-ink); }
 .hg-node { width: 60px; height: 60px; border-radius: 50%; z-index: 3; }
 .hg-node img { width: 36px; height: 36px; background: #fff; border-radius: 50%; padding: 5px; box-sizing: border-box; }
 .hg-node.sm { width: 50px; height: 50px; } .hg-node.sm img { width: 32px; height: 32px; }
-.hg-group.eco .hg-tile { background: #1b1f2a; border: 1px solid rgba(255, 255, 255, .14); }
-.hg-group.eco .hg-tile img { background: transparent; padding: 4px; }
+.hg-group.eco .hg-tile { background: var(--panel); border: 1px solid var(--border); }
+:root[data-theme="dark"] .hg-group.eco .hg-tile { background: #1b1f2a; border-color: rgba(255, 255, 255, .14); }
+:root[data-theme="dark"] .hg-group.eco .hg-tile img { background: transparent; padding: 4px; }
 .hg-float { animation: hgfloat 6.5s ease-in-out infinite; }
 .hg-float.d1 { animation-delay: -1.3s; } .hg-float.d2 { animation-delay: -2.6s; } .hg-float.d3 { animation-delay: -3.9s; } .hg-float.d4 { animation-delay: -5.2s; }
 @keyframes hgfloat { 0%,100% { transform: translate(-50%, -50%); } 50% { transform: translate(-50%, calc(-50% - 7px)); } }
