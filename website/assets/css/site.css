@@ -355,7 +355,7 @@ pre code { background: none; border: none; padding: 0; color: var(--code-ink); }
 @media (prefers-reduced-motion: reduce) { .marquee-track { animation: none; } }
 
 /* security / compliance strip */
-.secstrip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; }
+.secstrip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
 .secitem { text-align: center; padding: 20px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow-sm); }
 .secitem .si { width: 40px; height: 40px; margin: 0 auto 12px; border-radius: 11px; display: inline-flex; align-items: center; justify-content: center; background: rgba(46,175,255,.12); color: var(--maya); }
 .secitem .si svg { width: 21px; height: 21px; }
