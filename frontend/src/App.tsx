@@ -251,9 +251,14 @@ export default function App() {
         };
     }, []);
 
-    const [workspacePathState, setWorkspacePathState] = useState<string | null>(() =>
-        getWorkspacePath(),
-    );
+    const [workspacePathState, setWorkspacePathState] = useState<string | null>(() => {
+        // Multi-account: on cold start the active account's bound workspace is
+        // authoritative (so reopening lands in the right account's context),
+        // falling back to the last global path for pre-account installs.
+        const accs = loadAccounts();
+        const active = accs.find(a => a.id === loadActiveAccountId()) ?? accs[0];
+        return active ? active.workspacePath ?? null : getWorkspacePath();
+    });
     // In Tauri: needs workspace picked + hydrated before saves start.
     // In browser: workspaceReady is always true; localStorage persists.
     const [workspaceReady, setWorkspaceReady] = useState<boolean>(!isInTauri());
