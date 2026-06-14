@@ -55,6 +55,18 @@
         }
     }
 
+    /* ---- dismissible announcement bar (per-version, like duckdb.org) ---- */
+    var ann = document.getElementById("announce");
+    var annX = document.getElementById("announceX");
+    if (ann && annX) {
+        var annVer = ann.getAttribute("data-v") || "1";
+        try { if (localStorage.getItem("duckle-announce") === annVer) ann.style.display = "none"; } catch (e) {}
+        annX.addEventListener("click", function () {
+            ann.style.display = "none";
+            try { localStorage.setItem("duckle-announce", annVer); } catch (e) {}
+        });
+    }
+
     /* ---- docs sidebar: mark the current page active ---- */
     var here = location.pathname.split("/").pop() || "index.html";
     document.querySelectorAll(".docs-side a").forEach(function (a) {
