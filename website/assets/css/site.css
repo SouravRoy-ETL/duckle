@@ -481,3 +481,25 @@ pre code { background: none; border: none; padding: 0; color: var(--code-ink); }
 .modal-ok { text-align: center; padding: 8px 0; }
 .modal-ok .chk { width: 54px; height: 54px; margin: 0 auto 14px; border-radius: 50%; background: rgba(46, 175, 255, .14); color: var(--maya); display: flex; align-items: center; justify-content: center; }
 @media (max-width: 520px) { .modal .frow { grid-template-columns: 1fr; } }
+
+/* ============================================================
+   Discord widget: bottom-right floating button + invite popup
+   (yellow on dark, black on light)
+   ============================================================ */
+.discord-widget { position: fixed; right: 22px; bottom: 22px; z-index: 150; display: flex; flex-direction: column; align-items: flex-end; gap: 12px; }
+.discord-fab { width: 54px; height: 54px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; box-shadow: var(--shadow); transition: transform .15s, box-shadow .15s; }
+.discord-fab:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); text-decoration: none; }
+.discord-fab svg { width: 28px; height: 28px; }
+.discord-fab { background: #0d0d0d; color: #fff; }
+:root[data-theme="dark"] .discord-fab { background: var(--lemon); color: #0a0a0a; }
+.discord-pop { position: relative; max-width: 244px; background: var(--panel); border: 1px solid var(--border-2); border-radius: 14px; box-shadow: var(--shadow-lg); padding: 16px 16px 15px; animation: modalfade .2s ease; }
+.discord-pop strong { display: block; font-family: var(--font-heading); color: var(--ink); font-size: 1rem; margin-bottom: 4px; }
+.discord-pop p { color: var(--ink-2); font-size: .85rem; line-height: 1.45; margin: 0 0 12px; }
+.discord-pop-cta { display: inline-block; font-weight: 660; font-size: .85rem; padding: 8px 16px; border-radius: 999px; }
+.discord-pop-cta:hover { text-decoration: none; opacity: .9; }
+.discord-pop-cta { background: #0d0d0d; color: #fff; }
+:root[data-theme="dark"] .discord-pop-cta { background: var(--lemon); color: #0a0a0a; }
+.discord-pop-x { position: absolute; top: 8px; right: 8px; background: none; border: none; color: var(--ink-3); cursor: pointer; padding: 3px; line-height: 0; }
+.discord-pop-x:hover { color: var(--ink); }
+.discord-pop-x svg { width: 15px; height: 15px; }
+@media (max-width: 600px) { .discord-pop { display: none; } .discord-widget { right: 16px; bottom: 16px; } }
