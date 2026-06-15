@@ -3955,6 +3955,12 @@ impl DuckdbEngine {
                     return Err(EngineError::Query(format!("webhook accept: {}", e)));
                 }
             };
+            // The listener is non-blocking so we can poll cancel/deadline, but
+            // on macOS/BSD the accepted socket inherits O_NONBLOCK. A read could
+            // then hit WouldBlock before the request bytes arrive and the
+            // request would be dropped as malformed. Put the accepted stream
+            // back into blocking mode so the read timeout below governs it.
+            stream.set_nonblocking(false).ok();
             stream
                 .set_read_timeout(Some(Duration::from_millis(1000)))
                 .ok();
