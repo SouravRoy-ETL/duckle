@@ -6274,7 +6274,16 @@ impl DuckdbEngine {
         let mut content = std::fs::read_to_string(&resolved).map_err(|e| {
             EngineError::Config(format!("sub-pipeline: read '{}': {}", resolved, e))
         })?;
-        for (key, val) in subs {
+        // Resolve the workspace's context variables (e.g. ${MOTHERDUCK_TOKEN})
+        // in the child too. The parent pipeline is resolved by the caller before
+        // it reaches the engine, but a child read raw from disk here is not, so
+        // its context placeholders would otherwise pass through literally. Per-
+        // row ITER substitutions win on any key collision.
+        let mut merged = workspace_context_vars();
+        for (k, v) in subs {
+            merged.insert(k.clone(), v.clone());
+        }
+        for (key, val) in &merged {
             let placeholder = format!("${{{}}}", key);
             if content.contains(&placeholder) {
                 // JSON-escape the value before substitution so embedded
@@ -7381,6 +7390,66 @@ fn snowflake_cast_expr(ident: &str, sf_type: &str, scale: i64, precision: i64) -
     }
 }
 
+/// Load context variables for a workspace: read `repository.json`, and for each
+/// `type:"context"` item read `contexts/<id>.json` and expose its variables as
+/// both `key` and `<contextName>.key`. Mirrors the frontend's buildContextVars
+/// so a sub-pipeline read raw from disk resolves the same `${...}` references
+/// the top-level pipeline does (the parent arrives pre-resolved, a foreach /
+/// runjob child does not). Also exposes the `${workspace}` / `${projectroot}`
+/// builtins. Best-effort: any missing or unparseable file is skipped.
+pub(crate) fn context_vars_for_workspace(ws: &Path) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    let root = ws.to_string_lossy().replace('\\', "/");
+    out.insert("workspace".to_string(), root.clone());
+    out.insert("projectroot".to_string(), root);
+    let repo: serde_json::Value = match std::fs::read_to_string(ws.join("repository.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+    {
+        Some(v) => v,
+        None => return out,
+    };
+    for it in repo.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+        if it.get("type").and_then(|v| v.as_str()) != Some("context") {
+            continue;
+        }
+        let id = match it.get("id").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+        let name = it.get("name").and_then(|v| v.as_str()).unwrap_or(id);
+        let payload: serde_json::Value = match std::fs::read_to_string(
+            ws.join("contexts").join(format!("{}.json", id)),
+        )
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        {
+            Some(v) => v,
+            None => continue,
+        };
+        if let Some(vars) = payload.get("variables").and_then(|v| v.as_array()) {
+            for v in vars {
+                if let (Some(k), Some(val)) = (
+                    v.get("key").and_then(|x| x.as_str()),
+                    v.get("value").and_then(|x| x.as_str()),
+                ) {
+                    out.insert(k.to_string(), val.to_string());
+                    out.insert(format!("{}.{}", name, k), val.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Context vars for the active workspace (`$DUCKLE_WORKSPACE`); empty if unset.
+fn workspace_context_vars() -> std::collections::HashMap<String, String> {
+    match std::env::var("DUCKLE_WORKSPACE") {
+        Ok(w) if !w.is_empty() => context_vars_for_workspace(Path::new(&w)),
+        _ => std::collections::HashMap::new(),
+    }
+}
+
 fn resolve_subpipeline_ref(reference: &str) -> String {
     let looks_like_path =
         reference.contains('/') || reference.contains('\\') || reference.ends_with(".json");
@@ -7513,5 +7582,46 @@ mod connector_helper_tests {
         assert!(!bson_flag_matches(Some(&Bson::Boolean(false)), "true"));
         assert!(!bson_flag_matches(Some(&Bson::String("keep".into())), "delete"));
         assert!(!bson_flag_matches(None, "delete"));
+    }
+}
+
+#[cfg(test)]
+mod context_var_tests {
+    use super::context_vars_for_workspace;
+
+    #[test]
+    fn loads_workspace_context_vars_for_sub_pipelines() {
+        // A foreach / runjob child is read raw from disk, so its ${...} context
+        // placeholders must resolve from the workspace's contexts the same way
+        // the top-level pipeline does (a literal ${MOTHERDUCK_TOKEN} reaching
+        // MotherDuck fails as an invalid JWT).
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        std::fs::write(
+            ws.join("repository.json"),
+            r#"[{"id":"md_secrets","name":"MotherDuck","type":"context","parentId":"contexts"}]"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(ws.join("contexts")).unwrap();
+        std::fs::write(
+            ws.join("contexts").join("md_secrets.json"),
+            r#"{"variables":[{"key":"MOTHERDUCK_TOKEN","value":"tok-123","secret":true}]}"#,
+        )
+        .unwrap();
+
+        let vars = context_vars_for_workspace(ws);
+        // Both the bare key and the context-namespaced key resolve.
+        assert_eq!(vars.get("MOTHERDUCK_TOKEN").map(String::as_str), Some("tok-123"));
+        assert_eq!(vars.get("MotherDuck.MOTHERDUCK_TOKEN").map(String::as_str), Some("tok-123"));
+        // Built-in workspace placeholder is exposed too.
+        assert!(vars.contains_key("workspace"));
+    }
+
+    #[test]
+    fn missing_workspace_files_yield_only_builtins() {
+        let dir = tempfile::tempdir().unwrap();
+        let vars = context_vars_for_workspace(dir.path());
+        assert!(vars.contains_key("workspace"));
+        assert!(!vars.contains_key("MOTHERDUCK_TOKEN"));
     }
 }
