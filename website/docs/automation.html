@@ -34,8 +34,8 @@
 </head>
 <body>
 
-<div class="announce" id="announce" data-v="v0.3.0">
-  Duckle v0.3.0 is out - native multi-source dbt, brand connector icons and a faster local AI assistant.
+<div class="announce" id="announce" data-v="v0.4.0">
+  Duckle v0.4.0 is out - build self-contained Linux pipelines from any OS, run loops in parallel, and materialize steps straight to DuckDB.
   <a href="https://github.com/SouravRoy-ETL/duckle/releases/latest" target="_blank" rel="noopener">Read the release notes <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
   <button class="announce-x" id="announceX" type="button" aria-label="Dismiss"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
 </div>
@@ -116,6 +116,7 @@
 
 <h2>Headless runner and server deployment (Build Pipeline)</h2>
 <p>The <code>duckle-runner</code> CLI executes a pipeline file headlessly. "Build Pipeline" exports a self-contained server bundle (engine plus runner) with env/passphrase secret handling, so a pipeline can run on a server or in CI without the desktop app.</p>
+<p><b>Target OS.</b> The Build dialog has a Target OS selector: build natively for <b>Windows</b>, cross-build a <b>Linux</b> server file from any host (the Linux engine and DuckDB are bundled into the file for you), or build for <b>macOS</b> on a Mac. The output stays one self-contained file per target.</p>
 <p>There is also a File Transfer sink (<code>snk.ftp</code>, FTP/FTPS/SFTP) for delivering outputs to a remote host as part of the run.</p>
 
 <h2>Engines</h2>

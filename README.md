@@ -37,6 +37,7 @@
 **Get started**
 
 - [What is Duckle?](#what-is-duckle)
+- [What's new in v0.4.0](#whats-new-in-v040)
 - [Quickstart (60 s)](#quickstart-60-seconds)
 - [Download / Install](#download--install)
 - [Build from source](#build-from-source)
@@ -116,6 +117,24 @@ Three things make Duckle different from the heavyweights and the toy ETL tools:
 
 ---
 
+## What's new in v0.4.0
+
+- **Cross-OS Build Pipeline.** The Build dialog has a **Target OS** selector. Build a self-contained **Linux** server file from any OS (the Linux engine and DuckDB are bundled for you), build natively for **Windows**, or build for **macOS** on a Mac. Same single-file output, now per target.
+- **Materialize a step to DuckDB.** Pin any step to memory, to disk, or persist it to a real **`.duckdb` file** you can reopen later - handy for caching an expensive join or handing a step's output to a BI tool.
+- **Parallel loops.** `ctl.foreach` runs its per-row child pipeline with a configurable **concurrency**, so fan-out work (per-table loads, per-partition exports) finishes far faster.
+- **Zip Arrays to Table** (`xf.zip`) - turn a headings array plus row-arrays into a proper table, one column per heading.
+- **Portable workspaces.** A built-in **`${workspace}`** placeholder resolves to the current workspace folder, so file paths travel with the project.
+- **Local multi-account profiles.** Keep separate accounts / workspaces and switch between them from the top bar without restarting.
+- **Resolved context-variable hints.** Bindable fields show the **resolved value** of a `${VAR}` inline (secrets masked), so you see exactly what a node will use.
+- **MotherDuck polish.** The real MotherDuck brand mark, inline token applied via `SET` (no more device-login prompts), sinks that auto-create the target on first write, and Snowflake endpoint + MotherDuck upsert exposed in the property panel.
+- **Smarter auto-layout.** One-click tidy ranks nodes by dependency depth and spaces columns by node width, so connectors always have room.
+- **A new website and docs** at **[duckle.org](https://duckle.org)** - landing page, component and automation docs, a filterable integrations directory, and search-friendly metadata.
+- **Reliability.** A single corrupt workspace file no longer blocks the whole workspace, cold start opens the active account's workspace, the webhook source no longer drops requests on macOS, and attach-backed Parquet sources stay on the fast path under a reject split.
+
+Full notes: see the [v0.4.0 release](https://github.com/SouravRoy-ETL/duckle/releases/tag/v0.4.0).
+
+---
+
 ## Meet Duckie - the local AI pipeline assistant
 
 > Describe what you need. Duckie writes the pipeline.
@@ -158,9 +177,9 @@ Duckle is in **public beta**. The visual designer, the DuckDB execution engine, 
 
 **Scope, stated plainly:** Duckle is a single-machine, embedded studio. If you outgrow one box, point Duckle's output at the system that scales (a warehouse, an object store, a lakehouse). It will not pretend to be a cluster.
 
-The component palette ships **313 nodes** so the roadmap is visible in the product itself:
+The component palette ships **330 nodes** so the roadmap is visible in the product itself:
 
-- **292 available** runs on the DuckDB engine today
+- **309 available** runs on the DuckDB engine today
 - **5 preview** is configurable in the designer (drag, wire, set properties); execution is being wired engine-by-engine
 - **16 planned** is reserved in the palette but not yet executable - see [`docs/roadmap.md`](docs/roadmap.md)
 
@@ -397,7 +416,7 @@ When the installer downloads the DuckDB CLI it also pre-fetches the extensions D
 
 ## Download / Install
 
-Pick the binary for your OS from the [latest release](https://github.com/SouravRoy-ETL/duckle/releases/tag/v0.3.0):
+Pick the binary for your OS from the [latest release](https://github.com/SouravRoy-ETL/duckle/releases/tag/v0.4.0):
 
 | OS | Asset | How to run |
 |---|---|---|
@@ -705,7 +724,7 @@ The process exits `0` on success and non-zero on failure, and writes the same ND
 
 | Option | What it does |
 |---|---|
-| **Target OS** | The file is built for the OS you build on - build on Linux to deploy to a Linux server. Appending the payload makes the file unsigned, so do not codesign / Authenticode-sign it. |
+| **Target OS** | Pick **Windows**, **Linux**, or **macOS** in the build dialog. The native OS always builds; a **Linux** server file can be cross-built from any host (the Linux engine is bundled for you), while a macOS file can only be produced on a Mac. Appending the payload makes the file unsigned, so do not codesign / Authenticode-sign it. |
 | **Context** | Pick a context at build time; its non-secret variables are baked into the pipeline. |
 | **Secrets: Environment** | Each secret becomes a `${ENV:KEY}` placeholder, so nothing sensitive is written into the file. The runner resolves real environment variables first, then a `secrets.env` (KEY=VALUE lines) placed next to the file. |
 | **Secrets: Passphrase** | Secrets are encrypted inside the file with AES-256-GCM, decrypted at run time from the `DUCKLE_BUNDLE_PASSPHRASE` environment variable. |
