@@ -128,7 +128,7 @@ wasmi = "0.40"
 # fs. The user supplies a transform(row) -> object function and the
 # engine calls it per row, marshalling JSON in / out via the boa
 # JsValue<->serde_json bridge.
-boa_engine = "0.19"
+boa_engine = "0.20"
 # Used by xf.ai.pii for regex-based PII detection (emails, phones,
 # SSNs, credit cards). Already in our dep graph transitively but
 # pinned explicitly here so it's stable across upstream churn.
