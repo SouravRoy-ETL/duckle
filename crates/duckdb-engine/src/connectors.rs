@@ -7476,6 +7476,9 @@ pub(crate) fn context_vars_for_workspace(ws: &Path) -> std::collections::HashMap
     let root = ws.to_string_lossy().replace('\\', "/");
     out.insert("workspace".to_string(), root.clone());
     out.insert("projectroot".to_string(), root);
+    // Dynamic date/time builtins so foreach / runjob children resolve
+    // ${date}/${datetime}/... in their paths just like the top-level run.
+    crate::context::insert_time_builtins(&mut out);
     let repo: serde_json::Value = match std::fs::read_to_string(ws.join("repository.json"))
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())

@@ -246,12 +246,15 @@ impl Scheduler {
         // scheduled run sent the raw ${context.X} placeholder to the driver, so
         // a pipeline that ran fine from the canvas failed under a schedule with
         // auth errors like ORA-01017 (issue #32).
-        let pipeline = duckle_duckdb_engine::context::resolve_workspace(
+        let mut pipeline = duckle_duckdb_engine::context::resolve_workspace(
             &workspace,
             &pipeline_id,
             None,
         )?
         .doc;
+        // Stamp the dynamic date/time builtins (${date}/${datetime}/...) at fire
+        // time, so a recurring schedule writes a fresh-dated path on every run.
+        duckle_duckdb_engine::context::apply_time_builtins(&mut pipeline);
         // A fresh per-run cancel scope so concurrent scheduled runs (and the
         // interactive run) don't share or reset each other's cancellation.
         let engine = self.engine.for_new_run();

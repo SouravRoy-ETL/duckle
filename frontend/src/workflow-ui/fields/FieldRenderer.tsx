@@ -54,6 +54,13 @@ export default function FieldRenderer({ field, value, onChange }: Props) {
                 renderInput(field, value, onChange)
             )}
             {BINDABLE.has(field.kind) ? <ResolvedHint value={value} /> : null}
+            {field.kind === 'save-path' && !value ? (
+                <div className="form-field-desc">
+                    Tip: <code>{'${date}'}</code>, <code>{'${datetime}'}</code> and{' '}
+                    <code>{'${timestamp}'}</code> stamp the run time into the path;{' '}
+                    <code>{'${workspace}'}</code> is the project root.
+                </div>
+            ) : null}
             {field.description ? (
                 <div className="form-field-desc">{field.description}</div>
             ) : null}

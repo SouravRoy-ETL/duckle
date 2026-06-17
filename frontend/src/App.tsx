@@ -1547,6 +1547,25 @@ export default function App() {
         setJobs(js => js.map(j => (j.id === id ? { ...j, name: newName } : j)));
     }, []);
 
+    const handleMoveRepoItem = useCallback(
+        (id: string, newParentId: string) => {
+            const item = repo.find(i => i.id === id);
+            const target = repo.find(i => i.id === newParentId);
+            if (!item || !target || id === newParentId) return;
+            if (item.type === 'project') return;
+            if (target.type !== 'folder' && target.type !== 'project') return;
+            if (item.parentId === newParentId) return;
+            // Reject moving a container into its own subtree (would orphan it).
+            let cur: typeof target | undefined = target;
+            while (cur) {
+                if (cur.id === id) return;
+                cur = cur.parentId ? repo.find(i => i.id === cur!.parentId) : undefined;
+            }
+            setRepo(r => r.map(i => (i.id === id ? { ...i, parentId: newParentId } : i)));
+        },
+        [repo],
+    );
+
     const handleDuplicateRepoItem = useCallback(
         (id: string) => {
             const item = repo.find(i => i.id === id);
@@ -1943,6 +1962,7 @@ export default function App() {
                     onRenameRepoItem={handleRenameRepoItem}
                     onDuplicateRepoItem={handleDuplicateRepoItem}
                     onDeleteRepoItem={handleDeleteRepoItem}
+                    onMoveRepoItem={handleMoveRepoItem}
                     onSchedulePipeline={handleSchedulePipeline}
                     onBackfillPipeline={handleBackfillPipeline}
                     onBuildPipeline={handleBuildPipeline}

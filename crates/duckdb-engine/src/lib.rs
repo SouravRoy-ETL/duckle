@@ -375,6 +375,12 @@ impl DuckdbEngine {
             );
         }
 
+        // Create the parent folder of every local file sink before running, so a
+        // timestamped path like `exports/${date}/out.csv` (already resolved by
+        // apply_time_builtins) doesn't fail because today's folder doesn't exist
+        // yet - DuckDB's COPY does not create intermediate directories.
+        ensure_local_sink_dirs(doc);
+
         let compiled = match target {
             Some(t) => plan::compile_partial(doc, t),
             None => plan::compile(doc),
@@ -1874,6 +1880,44 @@ fn now_nanos() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0)
+}
+
+/// Best-effort: create the parent directory of every local file sink's output
+/// path before the run. DuckDB's `COPY ... TO` does not create intermediate
+/// directories, so a timestamped path like `exports/${date}/out.csv` (already
+/// resolved by [`context::apply_time_builtins`]) would otherwise fail the first
+/// time today's folder is needed. Considers only `snk.*` nodes with a string
+/// `path` property; skips cloud URIs (anything containing `://`) and driver
+/// sinks (which carry no `path`). Errors are ignored - the COPY surfaces the
+/// real one if the directory still can't be made.
+fn ensure_local_sink_dirs(doc: &PipelineDoc) {
+    for node in &doc.nodes {
+        let is_sink = node
+            .data
+            .component_id
+            .as_deref()
+            .map(|c| c.starts_with("snk."))
+            .unwrap_or(false);
+        if !is_sink {
+            continue;
+        }
+        let path = match node
+            .data
+            .properties
+            .as_ref()
+            .and_then(|p| p.get("path"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+        {
+            Some(p) if !p.is_empty() && !p.contains("://") => p,
+            _ => continue,
+        };
+        if let Some(parent) = Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
+    }
 }
 
 /// Parse an RFC 5988 Link header and return the URL of the rel="next"

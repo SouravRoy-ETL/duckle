@@ -41,10 +41,20 @@ type Props = {
     onRename: (id: string, newName: string) => void;
     onDuplicate: (id: string) => void;
     onDelete: (id: string) => void;
+    onMove: (id: string, newParentId: string) => void;
     onSchedulePipeline: (id: string) => void;
     onBackfillPipeline: (id: string) => void;
     onBuildPipeline: (id: string) => void;
 };
+
+// Built-in top-level containers. They anchor the tree, so they cannot be
+// dragged (they stay put), but they are still valid drop targets.
+const SYSTEM_IDS = new Set(['root', 'pipelines', 'connections', 'contexts', 'routines', 'docs']);
+
+// MIME used to carry the dragged repo-item id for a tree reparent. Distinct
+// from `application/duckle-context` (drag a context onto the canvas), so both
+// gestures coexist.
+const MOVE_MIME = 'application/duckle-repo-move';
 
 const TYPE_LABEL: Record<RepoItemType, string> = {
     project: 'Project',
@@ -92,6 +102,7 @@ export default function ProjectTree(props: Props) {
         onRename,
         onDuplicate,
         onDelete,
+        onMove,
         onSchedulePipeline,
         onBackfillPipeline,
         onBuildPipeline,
@@ -113,7 +124,37 @@ export default function ProjectTree(props: Props) {
     );
     const [renamingId, setRenamingId] = useState<string | null>(null);
     const [draftName, setDraftName] = useState('');
+    // Id of the container currently highlighted as a drag-and-drop target.
+    const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+    // Id of the item being dragged. A ref (not state) because dragover fires
+    // constantly and the browser hides dataTransfer values until drop, so we
+    // need the id available without re-rendering on every move event.
+    const draggingIdRef = useRef<string | null>(null);
     const menu = useContextMenu();
+
+    // True if `candidateId` is `ancestorId` itself or nested under it, so a
+    // folder is never dropped into its own subtree (which would orphan it).
+    const isSelfOrDescendant = (candidateId: string, ancestorId: string): boolean => {
+        let cur: RepoItem | undefined = items.find(i => i.id === candidateId);
+        while (cur) {
+            if (cur.id === ancestorId) return true;
+            if (!cur.parentId) return false;
+            cur = items.find(i => i.id === cur!.parentId);
+        }
+        return false;
+    };
+
+    // Whether `draggedId` may be dropped into container `targetId`: a real move
+    // (not already its parent) that does not bury a folder inside itself.
+    const canDropInto = (draggedId: string, targetId: string): boolean => {
+        if (!draggedId || draggedId === targetId) return false;
+        const dragged = items.find(i => i.id === draggedId);
+        const target = items.find(i => i.id === targetId);
+        if (!dragged || !target) return false;
+        if (target.type !== 'folder' && target.type !== 'project') return false;
+        if (dragged.parentId === targetId) return false;
+        return !isSelfOrDescendant(targetId, draggedId);
+    };
 
     const childrenOf = useMemo(() => {
         const map = new Map<string, RepoItem[]>();
@@ -344,6 +385,10 @@ export default function ProjectTree(props: Props) {
             else if (!isContainer) onOpenItem(item);
         };
 
+        // Everything except the project root and the built-in folders can be
+        // dragged into a folder; containers accept those drops.
+        const isDraggable = item.type !== 'project' && !SYSTEM_IDS.has(item.id);
+
         return (
             <div key={item.id} className="repo-node-wrap">
                 <div
@@ -351,15 +396,61 @@ export default function ProjectTree(props: Props) {
                         'repo-node' +
                         (isActive ? ' is-active' : '') +
                         (isOpen ? ' is-open' : '') +
+                        (dropTargetId === item.id ? ' is-drop-target' : '') +
                         ' is-' + item.type
                     }
                     style={{ paddingLeft: 8 + depth * 14 }}
-                    draggable={item.type === 'context'}
+                    draggable={isDraggable}
                     onDragStart={
-                        item.type === 'context'
+                        isDraggable
                             ? e => {
-                                  e.dataTransfer.setData('application/duckle-context', item.id);
-                                  e.dataTransfer.effectAllowed = 'copy';
+                                  draggingIdRef.current = item.id;
+                                  e.dataTransfer.setData(MOVE_MIME, item.id);
+                                  // Keep the context-to-canvas gesture working.
+                                  if (item.type === 'context') {
+                                      e.dataTransfer.setData('application/duckle-context', item.id);
+                                  }
+                                  e.dataTransfer.effectAllowed = 'copyMove';
+                              }
+                            : undefined
+                    }
+                    onDragEnd={() => {
+                        draggingIdRef.current = null;
+                        setDropTargetId(null);
+                    }}
+                    onDragOver={
+                        isContainer
+                            ? e => {
+                                  const id = draggingIdRef.current;
+                                  if (id && canDropInto(id, item.id)) {
+                                      e.preventDefault();
+                                      e.dataTransfer.dropEffect = 'move';
+                                      if (dropTargetId !== item.id) setDropTargetId(item.id);
+                                  }
+                              }
+                            : undefined
+                    }
+                    onDragLeave={
+                        isContainer
+                            ? e => {
+                                  if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                                      setDropTargetId(p => (p === item.id ? null : p));
+                                  }
+                              }
+                            : undefined
+                    }
+                    onDrop={
+                        isContainer
+                            ? e => {
+                                  e.preventDefault();
+                                  const id =
+                                      draggingIdRef.current || e.dataTransfer.getData(MOVE_MIME);
+                                  draggingIdRef.current = null;
+                                  setDropTargetId(null);
+                                  if (id && canDropInto(id, item.id)) {
+                                      onMove(id, item.id);
+                                      if (!expanded.has(item.id)) toggle(item.id);
+                                  }
                               }
                             : undefined
                     }
@@ -368,8 +459,10 @@ export default function ProjectTree(props: Props) {
                     onContextMenu={e => onItemContextMenu(e, item)}
                     title={
                         item.type === 'context'
-                            ? `${item.name} - drag onto the canvas to make it the active context`
-                            : item.name
+                            ? `${item.name} - drag onto the canvas to make it the active context, or into a folder to move it`
+                            : isDraggable
+                              ? `${item.name} - drag into a folder to move it`
+                              : item.name
                     }
                 >
                     <span className="repo-chevron" aria-hidden="true">

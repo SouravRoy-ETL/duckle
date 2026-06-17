@@ -22,6 +22,7 @@ type Props = {
     onRenameRepoItem: (id: string, newName: string) => void;
     onDuplicateRepoItem: (id: string) => void;
     onDeleteRepoItem: (id: string) => void;
+    onMoveRepoItem: (id: string, newParentId: string) => void;
     onSchedulePipeline: (id: string) => void;
     onBackfillPipeline: (id: string) => void;
     onBuildPipeline: (id: string) => void;
@@ -42,6 +43,7 @@ export default function LeftSidebar({
     onRenameRepoItem,
     onDuplicateRepoItem,
     onDeleteRepoItem,
+    onMoveRepoItem,
     onSchedulePipeline,
     onBackfillPipeline,
     onBuildPipeline,
@@ -92,6 +94,7 @@ export default function LeftSidebar({
                         onRename={onRenameRepoItem}
                         onDuplicate={onDuplicateRepoItem}
                         onDelete={onDeleteRepoItem}
+                        onMove={onMoveRepoItem}
                         onSchedulePipeline={onSchedulePipeline}
                         onBackfillPipeline={onBackfillPipeline}
                         onBuildPipeline={onBuildPipeline}

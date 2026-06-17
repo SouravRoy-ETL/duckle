@@ -1345,6 +1345,13 @@ textarea:focus-visible {
     color: var(--text-1);
 }
 
+/* Folder/project highlighted while a dragged item hovers over it. */
+.repo-node.is-drop-target {
+    background: var(--bg-2);
+    box-shadow: inset 0 0 0 1.5px var(--accent);
+    border-radius: 4px;
+}
+
 .repo-node.is-project {
     font-weight: 700;
     color: var(--text-1);

@@ -279,6 +279,10 @@ fn run() -> Result<bool, String> {
     // environment, then secrets.env, then a decrypted secrets.enc.
     let env_file = workspace.join("secrets.env");
     apply_env_pass(&mut doc, &workspace, &env_file)?;
+    // Stamp the dynamic date/time builtins (${date}/${datetime}/...) at run
+    // time. A built bundle deliberately ships these unresolved so each run
+    // (e.g. a daily cron of the same artifact) writes a fresh-dated path.
+    duckle_duckdb_engine::context::apply_time_builtins(&mut doc);
     let log_dir = args.log_dir.clone().unwrap_or_else(|| workspace.join("logs"));
     std::env::set_var("DUCKLE_WORKSPACE", &workspace);
     std::env::set_var("DUCKLE_LOG_DIR", &log_dir);

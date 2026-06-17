@@ -45,17 +45,50 @@ export function buildContextVars(repo: RepoItem[]): Record<string, string> {
     return out;
 }
 
+function pad(n: number): string {
+    return String(n).padStart(2, '0');
+}
+
+/**
+ * Dynamic date/time placeholders for timestamped source / sink paths, e.g.
+ * `${workspace}/exports/${date}/orders.parquet` or `out_${datetime}.csv`.
+ * All UTC so a run produces the same names on any machine / in CI, and
+ * mirrors the engine's insert_time_builtins (context.rs):
+ *   ${date}      -> YYYY-MM-DD
+ *   ${time}      -> HHMMSS
+ *   ${datetime}  -> YYYY-MM-DD_HHMMSS   (filename-safe, no colons)
+ *   ${timestamp} -> epoch seconds
+ *   ${now}       -> ISO-8601 (has colons; for values, not paths)
+ */
+function timeBuiltins(): Record<string, string> {
+    const d = new Date();
+    const ymd = `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+    const hms = `${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`;
+    return {
+        date: ymd,
+        time: hms,
+        datetime: `${ymd}_${hms}`,
+        timestamp: String(Math.floor(d.getTime() / 1000)),
+        now: `${ymd}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}Z`,
+    };
+}
+
 /**
  * Built-in placeholders available everywhere without defining a context.
  * `${workspace}` (and the `${projectroot}` alias) resolve to the active
  * workspace root, so paths can be written relative to it and the whole
  * workspace folder stays portable when it is copied or moved (#37). Path
  * separators are normalized to `/` (DuckDB accepts them on every platform).
+ * The date/time builtins are always present, even without a workspace.
  */
 export function builtinVars(workspacePath?: string | null): Record<string, string> {
-    if (!workspacePath) return {};
-    const root = workspacePath.replace(/\\/g, '/');
-    return { workspace: root, projectroot: root };
+    const vars = timeBuiltins();
+    if (workspacePath) {
+        const root = workspacePath.replace(/\\/g, '/');
+        vars.workspace = root;
+        vars.projectroot = root;
+    }
+    return vars;
 }
 
 function substituteString(value: string, vars: Record<string, string>): string {

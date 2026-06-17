@@ -83,6 +83,52 @@ fn read_repo(workspace: &Path) -> Result<Vec<RepoItem>, String> {
     serde_json::from_str(&text).map_err(|e| format!("parse {}: {}", path.display(), e))
 }
 
+/// Dynamic date/time builtins so source / sink paths can carry a timestamp
+/// (e.g. `${workspace}/exports/${date}/orders.parquet` or `out_${datetime}.csv`).
+/// All UTC so a run names files the same on any machine / in CI.
+///   `${date}`      -> YYYY-MM-DD
+///   `${time}`      -> HHMMSS
+///   `${datetime}`  -> YYYY-MM-DD_HHMMSS   (filename-safe, no colons)
+///   `${timestamp}` -> epoch seconds
+///   `${now}`       -> ISO-8601 (has colons; for values, not paths)
+pub(crate) fn insert_time_builtins(vars: &mut HashMap<String, String>) {
+    let now = chrono::Utc::now();
+    vars.insert("date".to_string(), now.format("%Y-%m-%d").to_string());
+    vars.insert("time".to_string(), now.format("%H%M%S").to_string());
+    vars.insert("datetime".to_string(), now.format("%Y-%m-%d_%H%M%S").to_string());
+    vars.insert("timestamp".to_string(), now.timestamp().to_string());
+    vars.insert("now".to_string(), now.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+}
+
+/// Resolve the dynamic date/time builtins (see [`insert_time_builtins`]) in
+/// every string property of every node, in place. This is a RUN-TIME pass,
+/// kept separate from [`build_context_vars`] / [`resolve_workspace`] on
+/// purpose: those also run at BUILD time (the `build` subcommand), and a built
+/// bundle must stamp the date when it RUNS, not when it was built. So the
+/// resolvers leave `${date}` & friends untouched and the run-time callers (the
+/// scheduler, the headless runner) apply this just before executing. An
+/// unknown `${...}` is left verbatim, exactly like the context-var pass.
+pub fn apply_time_builtins(doc: &mut PipelineDoc) {
+    let mut vars: HashMap<String, String> = HashMap::new();
+    insert_time_builtins(&mut vars);
+    let re = match regex::Regex::new(r"\$\{([^}]+)\}") {
+        Ok(re) => re,
+        Err(_) => return,
+    };
+    let replace = |s: &str| -> String {
+        re.replace_all(s, |caps: &regex::Captures| match vars.get(caps[1].trim()) {
+            Some(v) => v.clone(),
+            None => caps[0].to_string(),
+        })
+        .into_owned()
+    };
+    for node in &mut doc.nodes {
+        if let Some(props) = node.data.properties.as_mut() {
+            substitute_deep(props, &replace);
+        }
+    }
+}
+
 /// Build the context-var map (bare + `<contextName>.key`) and capture the
 /// raw values of secret:true vars. Port of buildContextVars plus secret
 /// capture. When `context` is Some, only that named context is loaded.
@@ -403,6 +449,65 @@ mod tests {
             props["alt"],
             serde_json::json!(format!("{}/out.parquet", root)),
             "${{projectroot}} alias must resolve to the workspace root"
+        );
+    }
+
+    #[test]
+    fn applies_dynamic_datetime_placeholders() {
+        // discussion #61: ${date}/${datetime}/${timestamp} let a sink path carry
+        // a run-time stamp (e.g. exports/${date}/orders.parquet). The run-time
+        // pass resolves them; we can't assert the wall-clock value, so check the
+        // shape. An unknown ${...} must survive untouched.
+        let mut doc: crate::PipelineDoc = serde_json::from_str(
+            r#"{"nodes":[{"id":"s","position":{"x":0,"y":0},"data":{"label":"P","componentId":"snk.parquet","properties":{"path":"exports/${date}/orders_${datetime}.parquet","ts":"${timestamp}","keep":"${UNKNOWN}"}}}],"edges":[]}"#,
+        )
+        .unwrap();
+        super::apply_time_builtins(&mut doc);
+        let props = doc.nodes[0].data.properties.as_ref().unwrap();
+        let path = props["path"].as_str().unwrap();
+        assert!(
+            !path.contains("${date}") && !path.contains("${datetime}"),
+            "date placeholders must be substituted, got {path}"
+        );
+        // exports/YYYY-MM-DD/orders_YYYY-MM-DD_HHMMSS.parquet
+        let re_ok = path.starts_with("exports/")
+            && path.matches(|c: char| c == '-').count() >= 4
+            && path.ends_with(".parquet");
+        assert!(re_ok, "path shape unexpected: {path}");
+        let ts = props["ts"].as_str().unwrap();
+        assert!(
+            ts.chars().all(|c| c.is_ascii_digit()) && ts.len() >= 10,
+            "${{timestamp}} must be epoch seconds, got {ts}"
+        );
+        assert_eq!(
+            props["keep"],
+            serde_json::json!("${UNKNOWN}"),
+            "an unknown placeholder must be left verbatim"
+        );
+    }
+
+    #[test]
+    fn resolve_workspace_does_not_bake_datetime() {
+        // Build-safety guard: resolve_workspace (also used by the `build`
+        // subcommand) must NOT resolve the date/time builtins, so a built bundle
+        // stamps the date when it RUNS, not when it was built. ${workspace}
+        // resolves; ${date} survives for the run-time pass to fill.
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        write(
+            &ws.join("pipelines/p1.json"),
+            r#"{"nodes":[{"id":"s","position":{"x":0,"y":0},"data":{"label":"P","componentId":"snk.parquet","properties":{"path":"${workspace}/exports/${date}/orders.parquet"}}}],"edges":[]}"#,
+        );
+        let resolved = resolve_workspace(ws, "p1", None).unwrap();
+        let path = resolved.doc.nodes[0].data.properties.as_ref().unwrap()["path"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let root = ws.to_string_lossy().replace('\\', "/");
+        assert_eq!(
+            path,
+            format!("{}/exports/${{date}}/orders.parquet", root),
+            "${{workspace}} resolves but ${{date}} must remain for the run-time pass"
         );
     }
 }
