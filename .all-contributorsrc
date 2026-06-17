@@ -23,6 +23,17 @@
         "infra",
         "test"
       ]
+    },
+    {
+      "login": "Pian0610",
+      "name": "Suffian0610",
+      "avatar_url": "https://avatars.githubusercontent.com/u/107343201?v=4",
+      "profile": "https://github.com/Pian0610",
+      "contributions": [
+        "infra",
+        "test",
+        "code"
+      ]
     }
   ]
 }
