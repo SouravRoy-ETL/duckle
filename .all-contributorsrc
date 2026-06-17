@@ -23,6 +23,105 @@
         "infra",
         "test"
       ]
+    },
+    {
+      "login": "ABChristian",
+      "name": "Christian",
+      "avatar_url": "https://avatars.githubusercontent.com/u/4749931?v=4",
+      "profile": "https://github.com/ABChristian",
+      "contributions": [
+        "ideas",
+        "test",
+        "code"
+      ]
+    },
+    {
+      "login": "gmacc00",
+      "name": "gmacc00",
+      "avatar_url": "https://avatars.githubusercontent.com/u/46499110?v=4",
+      "profile": "https://github.com/gmacc00",
+      "contributions": [
+        "infra",
+        "test",
+        "code"
+      ]
+    },
+    {
+      "login": "stephaneheckel",
+      "name": "Stéphane Heckel",
+      "avatar_url": "https://avatars.githubusercontent.com/u/206326846?v=4",
+      "profile": "https://github.com/stephaneheckel",
+      "contributions": [
+        "infra",
+        "test",
+        "code"
+      ]
+    },
+    {
+      "login": "ssnowball",
+      "name": "Steven Snowball",
+      "avatar_url": "https://avatars.githubusercontent.com/u/10828099?v=4",
+      "profile": "https://github.com/ssnowball",
+      "contributions": [
+        "infra",
+        "test",
+        "code"
+      ]
+    },
+    {
+      "login": "Pian0610",
+      "name": "Suffian0610",
+      "avatar_url": "https://avatars.githubusercontent.com/u/107343201?v=4",
+      "profile": "https://github.com/Pian0610",
+      "contributions": [
+        "infra",
+        "test",
+        "code"
+      ]
+    },
+    {
+      "login": "add944",
+      "name": "add944",
+      "avatar_url": "https://avatars.githubusercontent.com/u/288381564?v=4",
+      "profile": "https://github.com/add944",
+      "contributions": [
+        "infra",
+        "test",
+        "code"
+      ]
+    },
+    {
+      "login": "KNP-BI",
+      "name": "KNP-BI",
+      "avatar_url": "https://avatars.githubusercontent.com/u/73139861?v=4",
+      "profile": "https://github.com/KNP-BI",
+      "contributions": [
+        "infra",
+        "test",
+        "code"
+      ]
+    },
+    {
+      "login": "hawkfish",
+      "name": "Richard Wesley",
+      "avatar_url": "https://avatars.githubusercontent.com/u/13156216?v=4",
+      "profile": "https://www.linkedin.com/in/riwesley/",
+      "contributions": [
+        "infra",
+        "test",
+        "code"
+      ]
+    },
+    {
+      "login": "micha9ski",
+      "name": "micha9ski",
+      "avatar_url": "https://avatars.githubusercontent.com/u/200447708?v=4",
+      "profile": "https://github.com/micha9ski",
+      "contributions": [
+        "infra",
+        "test",
+        "code"
+      ]
     }
   ]
 }
