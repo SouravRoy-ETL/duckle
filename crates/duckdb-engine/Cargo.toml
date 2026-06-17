@@ -31,7 +31,7 @@ ureq = { version = "2.10", default-features = false, features = ["tls", "json", 
 # store. Pinned to the same versions/provider ureq already resolves (ring),
 # so this adds no new crypto backend and no extra build cost. See src/tls.rs.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 rustls-native-certs = "0.7"
 rustls-pemfile = "2"
 # Snowflake JWT RS256 auth path. Reads a PEM-encoded private key,
