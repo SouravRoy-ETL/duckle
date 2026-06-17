@@ -35,7 +35,7 @@ serde_json = { workspace = true }
 # (secrets.rs). Same AES-256-GCM scheme the duckle-runner bundle uses.
 aes-gcm = "0.10"
 base64 = "0.22"
-getrandom = "0.2"
+getrandom = "0.4"
 # Parse the GitHub release asset's RFC3339 upload time + format the embedded
 # build time for the update-available check (update_check.rs).
 chrono = { workspace = true }
