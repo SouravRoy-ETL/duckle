@@ -7300,6 +7300,11 @@ html[dir='rtl'] .topbar-lang {
     opacity: 0.5;
     cursor: default;
 }
+.update-banner-cta-secondary {
+    background: transparent;
+    border-color: rgba(255, 255, 255, 0.25);
+    font-weight: 500;
+}
 .update-banner-dismiss {
     background: transparent;
     color: rgba(255, 255, 255, 0.85);

@@ -546,6 +546,26 @@ export async function checkForUpdate(): Promise<UpdateInfo | null> {
     }
 }
 
+/** Progress phases streamed by the self_update backend command. */
+export type SelfUpdateProgress =
+    | { phase: 'downloading'; received: number; total?: number }
+    | { phase: 'verifying' }
+    | { phase: 'installing' }
+    | { phase: 'ready' };
+
+/**
+ * Download + checksum-verify the latest release for this OS, swap it over the
+ * running executable, and restart onto it - so the user never manually
+ * downloads a build. On success the backend restarts the app (this promise may
+ * not resolve because the process is replaced); on failure it rejects with a
+ * message and the caller should fall back to the manual download link.
+ */
+export async function selfUpdate(onProgress?: (p: SelfUpdateProgress) => void): Promise<void> {
+    const channel = new Channel<SelfUpdateProgress>();
+    if (onProgress) channel.onmessage = onProgress;
+    await invoke<void>('self_update', { onProgress: channel });
+}
+
 // ---- Build pipeline bundle ---------------------------------------------
 
 export type SecretsMode = 'env' | 'passphrase';

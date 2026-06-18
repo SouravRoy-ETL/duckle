@@ -53,6 +53,7 @@ coverage/
 
 # Local DuckDB CLI for tests (DUCKLE_DUCKDB_BIN)
 .duckdb-cli/
+.duckdb-cli-*/
 
 # stray sink test outputs
 samples/*.parquet

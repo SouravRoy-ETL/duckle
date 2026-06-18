@@ -24,6 +24,7 @@ mod dbt_engine;
 mod engine_manager;
 mod llama_chat;
 mod secrets;
+mod self_update;
 mod update_check;
 mod workspace_git;
 use engine_manager::{EngineStatus, InstallProgress};
@@ -174,7 +175,8 @@ pub fn run() {
             build_capabilities,
             mcp_connection_info,
             connect_claude_code,
-            mcp_inject_config
+            mcp_inject_config,
+            self_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running duckle");
@@ -690,6 +692,27 @@ async fn check_for_update() -> Result<update_check::UpdateInfo, String> {
     tokio::task::spawn_blocking(update_check::check)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// In-app self-update: download + checksum-verify the latest release binary for
+/// this OS, swap it over the running executable, then restart onto the new
+/// build - so users never manually download a new file. Streams progress over
+/// the channel; on success the app restarts itself.
+#[tauri::command]
+async fn self_update(
+    app: tauri::AppHandle,
+    on_progress: tauri::ipc::Channel<self_update::Progress>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        self_update::run(|p| {
+            let _ = on_progress.send(p);
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    // The verified new binary is in place; relaunch onto it. (restart() is
+    // typed `-> !`; on a worker thread it defers to the next exit event.)
+    app.restart();
 }
 
 /// Write the embedded HOST duckle-runner bytes to a temp stub file and return

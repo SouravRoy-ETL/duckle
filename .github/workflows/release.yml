@@ -196,3 +196,31 @@ jobs:
           set -e
           asset="${{ matrix.asset }}"
           gh release upload "$REL_TAG" "_release/$asset" --clobber
+
+  # Publish SHA256SUMS.txt covering the 6 binaries so the in-app self-updater
+  # can verify a downloaded build before swapping it in. Uploads are per-matrix
+  # job, so checksums must be a separate job that pulls the finished assets back.
+  checksums:
+    name: Publish SHA256SUMS
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download assets, checksum, upload
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          REL_TAG: ${{ github.event.inputs.release_tag || github.ref_name }}
+        run: |
+          set -e
+          mkdir -p _sums && cd _sums
+          gh release download "$REL_TAG" --clobber
+          # Checksum exactly the 6 published binaries (not any prior SHA file).
+          sha256sum \
+            Duckle-linux-x64 Duckle-linux-arm64 \
+            Duckle-macos-x64 Duckle-macos-arm64 \
+            Duckle-windows-x64.exe Duckle-windows-arm64.exe > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$REL_TAG" SHA256SUMS.txt --clobber
