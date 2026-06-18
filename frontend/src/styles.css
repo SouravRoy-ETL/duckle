@@ -304,6 +304,20 @@ textarea:focus-visible {
     filter: drop-shadow(0 0 5px var(--accent-glow)) drop-shadow(0 0 2px var(--accent-soft));
 }
 
+/* "Duckle by Slothflow" wordmark + maker signature in the header. */
+.brand-name {
+    font-weight: 700;
+}
+.brand-by {
+    font-size: 10px;
+    font-weight: 600;
+    opacity: 0.5;
+    margin-left: 5px;
+    align-self: flex-end;
+    padding-bottom: 3px;
+    white-space: nowrap;
+}
+
 /* The "D." mark colors follow the theme via the --logo-* tokens. */
 .duckle-logo-disc {
     fill: var(--logo-disc);

@@ -1,22 +1,18 @@
-// Duckle "D." brand mark: a disc with a half-disc "D" and a dot. Disc, glyph
-// and ring colors come from the --logo-* CSS variables so the mark follows the
-// active theme (yellow-on-slate in dark, orange on light). Decorative by
-// default - the adjacent "Duckle" wordmark carries the accessible name.
+// Duckle brand mark: the pixel-art orange "D" sloth. Transparent PNG (the sloth
+// is negative space) so it reads on both dark and light surfaces; the soft glow
+// comes from the .brand-logo CSS filter. Decorative by default - the adjacent
+// "Duckle" wordmark carries the accessible name.
+import logoUrl from './duckle-logo-pixel.png';
 
 export function DuckleLogo({ size = 24, className }: { size?: number; className?: string }) {
     return (
-        <svg
+        <img
+            src={logoUrl}
             width={size}
             height={size}
-            viewBox="0 0 256 256"
             className={className ? `duckle-logo ${className}` : 'duckle-logo'}
+            alt=""
             aria-hidden="true"
-        >
-            <circle className="duckle-logo-disc" cx="128" cy="128" r="120" vectorEffect="non-scaling-stroke" />
-            <g className="duckle-logo-glyph">
-                <path d="M56 54 A74 74 0 0 1 56 202 Z" />
-                <circle cx="173" cy="128" r="27" />
-            </g>
-        </svg>
+        />
     );
 }

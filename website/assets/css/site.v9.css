@@ -132,6 +132,7 @@ p { margin: 0 0 1em; color: var(--ink-2); }
 .brand:hover { text-decoration: none; }
 .brand img { width: 30px; height: 30px; }
 .brand .dot { color: var(--gold); }
+.brand .by { font-size: .56em; font-weight: 600; opacity: .5; margin-left: 1px; align-self: flex-end; padding-bottom: 3px; white-space: nowrap; }
 .nav-links { display: flex; align-items: center; gap: 2px; margin-left: 8px; }
 .nav-links a { color: var(--ink-2); font-weight: 560; font-size: .94rem; padding: 8px 13px; border-radius: 9px; white-space: nowrap; }
 .nav-links a:hover { color: var(--ink); background: var(--bg-2); text-decoration: none; }
