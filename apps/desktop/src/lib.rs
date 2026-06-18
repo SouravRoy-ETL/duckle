@@ -715,6 +715,14 @@ async fn self_update(
     app.restart();
 }
 
+/// Test-only entry point for the headless update self-test (see
+/// `self_update::selftest_main`). Compiled only with `--features
+/// update-selftest`; never present in releases.
+#[cfg(feature = "update-selftest")]
+pub fn self_update_selftest() -> ! {
+    self_update::selftest_main()
+}
+
 /// Write the embedded HOST duckle-runner bytes to a temp stub file and return
 /// the path. The host runner is always the BUILDER (run with `build ...`); for
 /// a same-OS target it is also the artifact stub. The file must have no open

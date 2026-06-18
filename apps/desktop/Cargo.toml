@@ -70,3 +70,8 @@ tempfile = "3.10"
 # `tauri build` sets this automatically; raw `cargo build --release`
 # does not, so the release workflow must pass `--features custom-protocol`.
 custom-protocol = ["tauri/custom-protocol"]
+# Test-only: compiles in a hidden `--self-update-selftest` CLI mode that drives
+# the real download/verify/swap against a local fake-release (DUCKLE_SELFTEST_*
+# env). NEVER enabled for releases - keeps the update source un-overridable in
+# shipped binaries.
+update-selftest = []

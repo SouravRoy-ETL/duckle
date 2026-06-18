@@ -11,7 +11,7 @@ use serde::Serialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum Progress {
     Downloading { received: u64, total: Option<u64> },
@@ -147,7 +147,7 @@ pub fn sweep_leftovers(exe_dir: &Path) {
 }
 
 /// Download + verify + swap the latest release over the running exe.
-pub fn run(mut on_progress: impl FnMut(Progress)) -> Result<(), String> {
+pub fn run(on_progress: impl FnMut(Progress)) -> Result<(), String> {
     let info = crate::update_check::check();
     if !info.update_available {
         return Err(info
@@ -160,7 +160,18 @@ pub fn run(mut on_progress: impl FnMut(Progress)) -> Result<(), String> {
     let asset_name = info
         .asset_name
         .ok_or("No release asset matches this platform.")?;
+    fetch_verify_swap(&download_url, &asset_name, on_progress)
+}
 
+/// Download `download_url`, verify the bytes against the `SHA256SUMS.txt` in the
+/// same release directory, then swap them over the running exe. Split out from
+/// `run` so a feature-gated self-test can exercise the real download + verify +
+/// swap against a local fake-release without touching GitHub.
+pub(crate) fn fetch_verify_swap(
+    download_url: &str,
+    asset_name: &str,
+    mut on_progress: impl FnMut(Progress),
+) -> Result<(), String> {
     if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
         sweep_leftovers(&dir);
     }
@@ -181,10 +192,10 @@ pub fn run(mut on_progress: impl FnMut(Progress)) -> Result<(), String> {
         .filter(|r| r.status().is_success())
         .and_then(|r| r.text().ok())
         .ok_or("This release ships no SHA256SUMS, so the update can't be verified. Use Get the update to download it manually.")?;
-    let want = checksum_for(&sums, &asset_name)
+    let want = checksum_for(&sums, asset_name)
         .ok_or_else(|| format!("no checksum for {asset_name} in SHA256SUMS"))?;
 
-    let bytes = download(&client, &download_url, &mut on_progress)?;
+    let bytes = download(&client, download_url, &mut on_progress)?;
     if (bytes.len() as u64) < 1_000_000 {
         return Err(format!(
             "the downloaded update is implausibly small ({} bytes); aborting",
@@ -204,6 +215,28 @@ pub fn run(mut on_progress: impl FnMut(Progress)) -> Result<(), String> {
     swap_current_exe(&bytes)?;
     on_progress(Progress::Ready);
     Ok(())
+}
+
+/// Feature-gated headless self-test (NOT compiled into releases). Drives the
+/// real `fetch_verify_swap` against the URL/asset in the environment so the
+/// download + SHA256SUMS verify + locked-exe swap can be verified end-to-end
+/// against a local fake-release. Swaps THIS process's exe, so run it on a
+/// throwaway copy. Exits the process with the result.
+#[cfg(feature = "update-selftest")]
+pub fn selftest_main() -> ! {
+    let url = std::env::var("DUCKLE_SELFTEST_DOWNLOAD_URL")
+        .expect("set DUCKLE_SELFTEST_DOWNLOAD_URL");
+    let asset = std::env::var("DUCKLE_SELFTEST_ASSET").expect("set DUCKLE_SELFTEST_ASSET");
+    match fetch_verify_swap(&url, &asset, |p| eprintln!("progress: {p:?}")) {
+        Ok(()) => {
+            println!("SELFTEST_OK");
+            std::process::exit(0);
+        }
+        Err(e) => {
+            println!("SELFTEST_ERR: {e}");
+            std::process::exit(3);
+        }
+    }
 }
 
 #[cfg(test)]
