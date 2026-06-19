@@ -316,6 +316,7 @@ export default function PropertiesPanel({
                     repoItems,
                     workspacePath,
                     activeContext,
+                    nodeProps: props,
                     onPickConnection: (payload: ConnectionPayload) => {
                         if (!selected) return;
                         const next = { ...(selected.data.properties ?? {}) };

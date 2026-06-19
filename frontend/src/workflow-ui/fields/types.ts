@@ -19,7 +19,8 @@ export type FieldKind =
     | 'key-value'
     | 'connection-ref'
     | 'routine-ref'
-    | 'pipeline-ref';
+    | 'pipeline-ref'
+    | 'ducklake-snapshot';
 
 export type SelectOption = { label: string; value: string };
 

@@ -16,6 +16,7 @@ import { KeyValueField } from './KeyValueField';
 import { FilterBuilderField } from './FilterBuilderField';
 import { ConnectionRefField } from './ConnectionRefField';
 import { RoutineRefField } from './RoutineRefField';
+import { SnapshotPickerField } from './SnapshotPickerField';
 import { PipelineRefField } from './PipelineRefField';
 import { FieldContext } from './FieldContext';
 import { buildContextVars, builtinVars } from '../../run-resolve';
@@ -255,6 +256,14 @@ function renderInput(field: Field, value: unknown, onChange: (v: unknown) => voi
         case 'pipeline-ref':
             return (
                 <PipelineRefField
+                    field={field}
+                    value={value as string | undefined}
+                    onChange={onChange}
+                />
+            );
+        case 'ducklake-snapshot':
+            return (
+                <SnapshotPickerField
                     field={field}
                     value={value as string | undefined}
                     onChange={onChange}

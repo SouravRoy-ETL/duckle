@@ -16,6 +16,9 @@ export type FieldContextValue = {
     workspacePath?: string | null;
     /** The context whose variables fields can bind to (if any). */
     activeContext?: ActiveContext;
+    /** The selected node's current properties, so a field can read sibling
+     *  values (e.g. the DuckLake snapshot picker needs the catalog `path`). */
+    nodeProps?: Record<string, unknown>;
     onPickConnection?: (payload: ConnectionPayload) => void;
     onPickRoutine?: (payload: RoutinePayload, routineId: string) => void;
 };
