@@ -145,6 +145,9 @@ pub(crate) fn build_view_sql(
         "qa.standardize" => build_standardize(inputs, props),
         "qa.mask" => build_mask(inputs, props),
         "qa.survivor" => build_survivor(inputs, props),
+        "qa.matchgroup" => build_matchgroup(inputs, props),
+        "qa.expect" => build_expect(inputs, props),
+        "qa.sample.adv" => build_sample_adv(inputs, props),
         "qa.dedupe" => build_fuzzy_dedupe(inputs, props),
         "qa.match" => build_record_match(inputs, props),
         "xf.reorder" => build_reorder(inputs, props),
@@ -1995,6 +1998,253 @@ pub(crate) fn build_survivor(inputs: &NodeInputs, props: &JsonValue) -> Result<S
         quote_ident(upstream),
         key_sql
     ))
+}
+
+/// qa.matchgroup: turn a list of matched record PAIRS into a stable cluster
+/// id per record. Reads two id columns (leftKey / rightKey, defaults id_a /
+/// id_b). Builds an undirected edge set (both pair directions) plus a self-rep
+/// for every record, then walks the transitive closure with a RECURSIVE CTE and
+/// assigns each id cluster_id = the MIN id reachable through any chain of
+/// matches (the connected-component representative). Output: id, cluster_id.
+/// The resolve step that follows Record Match in an MDM flow.
+pub(crate) fn build_matchgroup(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("qa.matchgroup"))?;
+    let left = string_prop(props, "leftKey")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "id_a".to_string());
+    let right = string_prop(props, "rightKey")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "id_b".to_string());
+    let from = quote_ident(upstream);
+    let l = quote_ident(&left);
+    let r = quote_ident(&right);
+    // Both pair directions, then every distinct id, then min-propagation over
+    // the transitive closure. UNION (not UNION ALL) dedups the frontier so the
+    // recursion terminates even on cyclic match graphs. CAST to VARCHAR so id
+    // columns of any type share one comparable type and cluster_id is stable.
+    Ok(format!(
+        "WITH RECURSIVE \
+         edges AS (\
+         SELECT CAST({l} AS VARCHAR) AS s, CAST({r} AS VARCHAR) AS t FROM {from} WHERE {l} IS NOT NULL AND {r} IS NOT NULL \
+         UNION \
+         SELECT CAST({r} AS VARCHAR), CAST({l} AS VARCHAR) FROM {from} WHERE {l} IS NOT NULL AND {r} IS NOT NULL), \
+         nodes AS (SELECT s AS id FROM edges UNION SELECT t AS id FROM edges), \
+         reach(id, rep) AS (\
+         SELECT id, id FROM nodes \
+         UNION \
+         SELECT e.t, r.rep FROM reach r JOIN edges e ON e.s = r.id) \
+         SELECT id, MIN(rep) AS cluster_id FROM reach GROUP BY id",
+        l = l,
+        r = r,
+        from = from
+    ))
+}
+
+/// qa.sample.adv: take a reproducible random sample of the upstream rows via
+/// `USING SAMPLE <percent> PERCENT (<method>, <seed>)` - reservoir (default) or
+/// bernoulli. A seed makes the draw deterministic (stable golden files / reruns);
+/// omit it for a fresh random sample each run. Pure SQL, columns preserved.
+pub(crate) fn build_sample_adv(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("qa.sample.adv"))?;
+    let percent = num_prop(props, "percent")
+        .ok_or_else(|| "sample: set a sampling percent (e.g. 10 for 10%)".to_string())?;
+    if let Ok(p) = percent.parse::<f64>() {
+        if !(0.0..=100.0).contains(&p) {
+            return Err(format!("sample: percent must be between 0 and 100 (got {})", percent));
+        }
+    }
+    let method = string_prop(props, "method").unwrap_or_else(|| "reservoir".into());
+    let method = match method.as_str() {
+        "reservoir" => "reservoir",
+        "bernoulli" => "bernoulli",
+        other => return Err(format!("sample: unknown method '{}' (use reservoir | bernoulli)", other)),
+    };
+    let sample_clause = match num_prop(props, "seed") {
+        Some(seed) => format!("{} PERCENT ({}, {})", percent, method, seed),
+        None => format!("{} PERCENT ({})", percent, method),
+    };
+    Ok(format!("SELECT * FROM {} USING SAMPLE {}", quote_ident(upstream), sample_clause))
+}
+
+/// qa.expect: a reusable expectation suite + data-quality scorecard - the
+/// native, no-Python answer to declarative data contracts. One node holds N
+/// rules ({column, check, args}); it emits ONE ROW PER RULE: expectation (text),
+/// total, failed, pass_rate, passed. Built as a UNION ALL of one per-rule SELECT
+/// that COUNTs total rows and rows failing the rule's predicate. Checks:
+/// not_null, unique, in_set, in_range, regex, non_negative.
+pub(crate) fn build_expect(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {
+    let upstream = inputs.main().ok_or_else(|| missing_input_msg("qa.expect"))?;
+    let from = quote_ident(upstream);
+    let rules = collect_expect_rules(props)?;
+    if rules.is_empty() {
+        return Err("Expectations needs at least one rule (column + check)".to_string());
+    }
+    let mut branches: Vec<String> = Vec::new();
+    for (column, check, args) in &rules {
+        if column.trim().is_empty() {
+            return Err(format!("Expectation '{}' is missing a column", check));
+        }
+        let col = quote_ident(column.trim());
+        let label = expect_label(column.trim(), check, args);
+        let label_lit = format!("'{}'", sql_escape(&label));
+        let branch = if check == "unique" {
+            format!(
+                "SELECT {label} AS expectation, \
+                 CAST(COUNT(*) AS BIGINT) AS total, \
+                 CAST(COUNT(*) FILTER (WHERE NOT __dq_ok) AS BIGINT) AS failed \
+                 FROM (SELECT (COUNT(*) OVER (PARTITION BY {col}) = 1) AS __dq_ok FROM {from}) __dq",
+                label = label_lit,
+                col = col,
+                from = from
+            )
+        } else {
+            let pred = expect_predicate(&col, check, args)?;
+            format!(
+                "SELECT {label} AS expectation, \
+                 CAST(COUNT(*) AS BIGINT) AS total, \
+                 CAST(COUNT(*) FILTER (WHERE NOT ({pred})) AS BIGINT) AS failed \
+                 FROM {from}",
+                label = label_lit,
+                pred = pred,
+                from = from
+            )
+        };
+        branches.push(branch);
+    }
+    Ok(format!(
+        "SELECT expectation, total, failed, \
+         CASE WHEN total = 0 THEN 1.0 ELSE CAST(total - failed AS DOUBLE) / total END AS pass_rate, \
+         (failed = 0) AS passed FROM ({}) __dq_scorecard",
+        branches.join(" UNION ALL ")
+    ))
+}
+
+/// PASS predicate for a single check (the row passes when this is TRUE).
+fn expect_predicate(col: &str, check: &str, args: &JsonValue) -> Result<String, String> {
+    match check {
+        "not_null" => Ok(format!("{} IS NOT NULL", col)),
+        "non_negative" => Ok(format!("{} >= 0", col)),
+        "in_range" => {
+            let min = num_prop(args, "min");
+            let max = num_prop(args, "max");
+            match (min, max) {
+                (Some(lo), Some(hi)) => Ok(format!("{} BETWEEN {} AND {}", col, lo, hi)),
+                (Some(lo), None) => Ok(format!("{} >= {}", col, lo)),
+                (None, Some(hi)) => Ok(format!("{} <= {}", col, hi)),
+                (None, None) => Err("in_range check needs a numeric min and/or max in args".to_string()),
+            }
+        }
+        "regex" => {
+            let pat = args
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| string_prop(args, "pattern"))
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| "regex check needs a pattern in args".to_string())?;
+            Ok(format!("regexp_full_match(CAST({} AS VARCHAR), '{}')", col, sql_escape(&pat)))
+        }
+        "in_set" => {
+            let arr = args
+                .as_array()
+                .or_else(|| args.get("values").and_then(JsonValue::as_array))
+                .ok_or_else(|| "in_set check needs a list of allowed values in args".to_string())?;
+            let mut lits: Vec<String> = Vec::new();
+            for v in arr {
+                match v {
+                    JsonValue::String(s) => lits.push(format!("'{}'", sql_escape(s))),
+                    JsonValue::Number(n) => lits.push(n.to_string()),
+                    JsonValue::Bool(b) => lits.push(b.to_string()),
+                    _ => {}
+                }
+            }
+            if lits.is_empty() {
+                return Err("in_set check needs at least one allowed value in args".to_string());
+            }
+            Ok(format!("{} IN ({})", col, lits.join(", ")))
+        }
+        other => Err(format!(
+            "Unknown check '{}' (use not_null | unique | in_set | in_range | regex | non_negative)",
+            other
+        )),
+    }
+}
+
+/// Human-readable expectation label for the scorecard's `expectation` column.
+fn expect_label(column: &str, check: &str, args: &JsonValue) -> String {
+    match check {
+        "in_range" => {
+            let lo = num_prop(args, "min").unwrap_or_else(|| "*".into());
+            let hi = num_prop(args, "max").unwrap_or_else(|| "*".into());
+            format!("in_range({}, {}, {})", column, lo, hi)
+        }
+        "in_set" => {
+            let n = args
+                .as_array()
+                .or_else(|| args.get("values").and_then(JsonValue::as_array))
+                .map(|a| a.len())
+                .unwrap_or(0);
+            format!("in_set({}, {} values)", column, n)
+        }
+        _ => format!("{}({})", check, column),
+    }
+}
+
+/// Read the rule list: the structured `rules` array of {column, check, args}
+/// (hand-authored / MCP), else the GUI key-value map (column -> "check" or
+/// "check:args"), mirroring build_mask's dual path.
+fn collect_expect_rules(props: &JsonValue) -> Result<Vec<(String, String, JsonValue)>, String> {
+    let mut out: Vec<(String, String, JsonValue)> = Vec::new();
+    if let Some(arr) = props.get("rules").and_then(JsonValue::as_array) {
+        for r in arr {
+            let column = r.get("column").and_then(JsonValue::as_str).unwrap_or("").to_string();
+            let check = r.get("check").and_then(JsonValue::as_str).unwrap_or("").trim().to_string();
+            if check.is_empty() {
+                continue;
+            }
+            let args = r.get("args").cloned().unwrap_or(JsonValue::Null);
+            out.push((column, check, args));
+        }
+        if !out.is_empty() {
+            return Ok(out);
+        }
+    }
+    for (column, spec) in kv_pairs(props, "rules") {
+        let (check, rest) = match spec.split_once(':') {
+            Some((c, r)) => (c.trim().to_string(), r.trim().to_string()),
+            None => (spec.trim().to_string(), String::new()),
+        };
+        if check.is_empty() {
+            continue;
+        }
+        let args = match check.as_str() {
+            "in_set" => JsonValue::Array(
+                rest.split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| JsonValue::String(s.to_string()))
+                    .collect(),
+            ),
+            "in_range" => {
+                let mut it = rest.split(',').map(str::trim);
+                let lo = it.next().filter(|s| !s.is_empty());
+                let hi = it.next().filter(|s| !s.is_empty());
+                let mut o = serde_json::Map::new();
+                if let Some(lo) = lo.and_then(|s| s.parse::<f64>().ok()) {
+                    o.insert("min".into(), serde_json::json!(lo));
+                }
+                if let Some(hi) = hi.and_then(|s| s.parse::<f64>().ok()) {
+                    o.insert("max".into(), serde_json::json!(hi));
+                }
+                JsonValue::Object(o)
+            }
+            "regex" => JsonValue::String(rest),
+            _ => JsonValue::Null,
+        };
+        out.push((column, check, args));
+    }
+    Ok(out)
 }
 
 pub(crate) fn build_standardize(inputs: &NodeInputs, props: &JsonValue) -> Result<String, String> {

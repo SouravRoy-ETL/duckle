@@ -1136,6 +1136,68 @@
     }
 
     #[test]
+    fn matchgroup_builds_recursive_cluster_sql() {
+        let mut ni = NodeInputs::default();
+        ni.ports.insert("main".into(), vec!["up".into()]);
+        let sql = build_matchgroup(&ni, &serde_json::json!({})).unwrap();
+        assert!(sql.starts_with("WITH RECURSIVE"), "got: {}", sql);
+        assert!(sql.contains("CAST(\"id_a\" AS VARCHAR) AS s, CAST(\"id_b\" AS VARCHAR) AS t"), "got: {}", sql);
+        assert!(sql.contains("SELECT CAST(\"id_b\" AS VARCHAR), CAST(\"id_a\" AS VARCHAR)"), "got: {}", sql);
+        assert!(sql.contains("SELECT id, MIN(rep) AS cluster_id FROM reach GROUP BY id"), "got: {}", sql);
+        assert!(sql.contains("FROM \"up\""), "got: {}", sql);
+        let custom = build_matchgroup(&ni, &serde_json::json!({"leftKey":"left rec","rightKey":"right rec"})).unwrap();
+        assert!(custom.contains("CAST(\"left rec\" AS VARCHAR) AS s, CAST(\"right rec\" AS VARCHAR) AS t"), "got: {}", custom);
+        assert!(build_matchgroup(&NodeInputs::default(), &serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn sample_adv_builds_using_sample_clause() {
+        let mut ni = NodeInputs::default();
+        ni.ports.insert("main".into(), vec!["up".into()]);
+        let seeded = build_sample_adv(&ni, &serde_json::json!({ "percent": 10, "method": "reservoir", "seed": 42 })).unwrap();
+        assert_eq!(seeded, "SELECT * FROM \"up\" USING SAMPLE 10 PERCENT (reservoir, 42)", "got: {}", seeded);
+        let no_seed = build_sample_adv(&ni, &serde_json::json!({ "percent": 5 })).unwrap();
+        assert_eq!(no_seed, "SELECT * FROM \"up\" USING SAMPLE 5 PERCENT (reservoir)", "got: {}", no_seed);
+        assert!(build_sample_adv(&ni, &serde_json::json!({})).is_err());
+        assert!(build_sample_adv(&ni, &serde_json::json!({ "percent": 150 })).is_err());
+        assert!(build_sample_adv(&ni, &serde_json::json!({ "percent": 10, "method": "bogus" })).is_err());
+        assert!(build_sample_adv(&ni, &serde_json::json!({ "percent": "10; DROP TABLE x" })).is_err());
+    }
+
+    #[test]
+    fn expect_builds_scorecard_per_rule() {
+        let mut ni = NodeInputs::default();
+        ni.ports.insert("main".into(), vec!["up".into()]);
+        let sql = build_expect(
+            &ni,
+            &serde_json::json!({ "rules": [
+                { "column": "email", "check": "not_null" },
+                { "column": "amt",   "check": "in_range", "args": { "min": 0, "max": 10 } },
+                { "column": "status","check": "in_set",   "args": ["paid", "pending"] },
+                { "column": "code",  "check": "regex",    "args": "^[A-Z]+$" },
+                { "column": "qty",   "check": "non_negative" },
+                { "column": "id",    "check": "unique" }
+            ]}),
+        )
+        .unwrap();
+        assert!(sql.contains("AS pass_rate"), "got: {}", sql);
+        assert!(sql.contains("(failed = 0) AS passed"), "got: {}", sql);
+        assert!(sql.contains("COUNT(*) FILTER (WHERE NOT (\"email\" IS NOT NULL))"), "got: {}", sql);
+        assert!(sql.contains("COUNT(*) FILTER (WHERE NOT (\"amt\" BETWEEN 0 AND 10))"), "got: {}", sql);
+        assert!(sql.contains("\"status\" IN ('paid', 'pending')"), "got: {}", sql);
+        assert!(sql.contains("regexp_full_match(CAST(\"code\" AS VARCHAR), '^[A-Z]+$')"), "got: {}", sql);
+        assert!(sql.contains("COUNT(*) OVER (PARTITION BY \"id\") = 1"), "got: {}", sql);
+        assert!(sql.contains("'in_set(status, 2 values)' AS expectation"), "got: {}", sql);
+        assert!(sql.contains("FROM \"up\""), "got: {}", sql);
+        assert!(build_expect(&ni, &serde_json::json!({ "rules": [] })).is_err());
+        assert!(build_expect(&ni, &serde_json::json!({ "rules": [{ "column": "x", "check": "bogus" }] })).is_err());
+        let kv = build_expect(&ni, &serde_json::json!({ "rules": { "amt": "in_range:0,10", "id": "unique" } })).unwrap();
+        // The key-value form parses 0,10 as floats, so the SQL is BETWEEN 0.0 AND 10.0.
+        assert!(kv.contains("\"amt\" BETWEEN 0.0 AND 10.0"), "got: {}", kv);
+        assert!(kv.contains("COUNT(*) OVER (PARTITION BY \"id\") = 1"), "got: {}", kv);
+    }
+
+    #[test]
     fn csv_declared_schema_overrides_autodetect() {
         // Regression for issue #3: when the user sets a column to
         // VARCHAR in the Schema panel (typical fix for dd/mm/yy dates

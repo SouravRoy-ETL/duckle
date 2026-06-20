@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "componentCount": 334,
+  "componentCount": 337,
   "components": [
     {
       "id": "src.csv",
@@ -33994,6 +33994,246 @@
                 "label": "Recency column (for most-recent / oldest)",
                 "kind": "column",
                 "description": "The date/version column used to rank rows when the rule is most-recent or oldest."
+              }
+            ]
+          }
+        ],
+        "ports": {
+          "inputs": [
+            {
+              "id": "main",
+              "label": "main",
+              "type": "main"
+            }
+          ],
+          "outputs": [
+            {
+              "id": "main",
+              "label": "pass",
+              "type": "main"
+            },
+            {
+              "id": "reject",
+              "label": "reject",
+              "type": "reject"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "qa.matchgroup",
+      "label": "Match Grouping (Cluster IDs)",
+      "kind": "quality",
+      "availability": "available",
+      "summary": "Turn a list of matched record pairs into one stable cluster id per record. Walks the transitive closure of the matches (a~b and b~c put a, b, c in one cluster) and assigns each id the cluster representative (the smallest reachable id). Pairs with Record Match. Output: id, cluster_id.",
+      "ports": {
+        "inputs": [
+          {
+            "id": "main",
+            "label": "main",
+            "type": "main"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "main",
+            "label": "pass",
+            "type": "main"
+          },
+          {
+            "id": "reject",
+            "label": "reject",
+            "type": "reject"
+          }
+        ]
+      },
+      "manifest": {
+        "id": "qa.matchgroup",
+        "kind": "transform",
+        "label": "Match Grouping (Cluster IDs)",
+        "description": "Turn a list of matched record pairs into one stable cluster id per record. Walks the transitive closure of the matches (a~b and b~c put a, b, c in one cluster) and assigns each id the cluster representative (the smallest reachable id). Pairs with Record Match. Output: id, cluster_id.",
+        "schemaSource": "upstream",
+        "sections": [
+          {
+            "label": "Match grouping",
+            "fields": [
+              {
+                "key": "leftKey",
+                "label": "Left id column",
+                "kind": "column",
+                "defaultValue": "id_a",
+                "description": "Column naming the first record of each matched pair."
+              },
+              {
+                "key": "rightKey",
+                "label": "Right id column",
+                "kind": "column",
+                "defaultValue": "id_b",
+                "description": "Column naming the second record of each matched pair."
+              }
+            ]
+          }
+        ],
+        "ports": {
+          "inputs": [
+            {
+              "id": "main",
+              "label": "main",
+              "type": "main"
+            }
+          ],
+          "outputs": [
+            {
+              "id": "main",
+              "label": "pass",
+              "type": "main"
+            },
+            {
+              "id": "reject",
+              "label": "reject",
+              "type": "reject"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "qa.expect",
+      "label": "Expectations",
+      "kind": "quality",
+      "availability": "available",
+      "summary": "Run a reusable suite of data-quality expectations (not-null, unique, in-set, in-range, regex, non-negative) and emit a scorecard: one row per rule with total, failed, pass_rate, and passed. The native, no-Python answer to declarative data contracts.",
+      "ports": {
+        "inputs": [
+          {
+            "id": "main",
+            "label": "main",
+            "type": "main"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "main",
+            "label": "pass",
+            "type": "main"
+          },
+          {
+            "id": "reject",
+            "label": "reject",
+            "type": "reject"
+          }
+        ]
+      },
+      "manifest": {
+        "id": "qa.expect",
+        "kind": "transform",
+        "label": "Expectations",
+        "description": "Run a reusable suite of data-quality expectations (not-null, unique, in-set, in-range, regex, non-negative) and emit a scorecard: one row per rule with total, failed, pass_rate, and passed. The native, no-Python answer to declarative data contracts.",
+        "schemaSource": "upstream",
+        "sections": [
+          {
+            "label": "Expectations",
+            "fields": [
+              {
+                "key": "rules",
+                "label": "Rules",
+                "kind": "key-value",
+                "required": true,
+                "description": "column -> check. Checks: not_null, unique, non_negative, or with args after a colon: in_set:a,b,c | in_range:min,max | regex:pattern. Emits one scorecard row per rule (total, failed, pass_rate, passed)."
+              }
+            ]
+          }
+        ],
+        "ports": {
+          "inputs": [
+            {
+              "id": "main",
+              "label": "main",
+              "type": "main"
+            }
+          ],
+          "outputs": [
+            {
+              "id": "main",
+              "label": "pass",
+              "type": "main"
+            },
+            {
+              "id": "reject",
+              "label": "reject",
+              "type": "reject"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "qa.sample.adv",
+      "label": "Sample (Reproducible %)",
+      "kind": "quality",
+      "availability": "available",
+      "summary": "Take a percentage sample of rows. Reservoir (even per-row probability) or Bernoulli (independent per row); set a seed to make the draw reproducible so the same rows are picked every run. All columns are preserved.",
+      "ports": {
+        "inputs": [
+          {
+            "id": "main",
+            "label": "main",
+            "type": "main"
+          }
+        ],
+        "outputs": [
+          {
+            "id": "main",
+            "label": "pass",
+            "type": "main"
+          },
+          {
+            "id": "reject",
+            "label": "reject",
+            "type": "reject"
+          }
+        ]
+      },
+      "manifest": {
+        "id": "qa.sample.adv",
+        "kind": "transform",
+        "label": "Sample (Reproducible %)",
+        "description": "Take a percentage sample of rows. Reservoir (even per-row probability) or Bernoulli (independent per row); set a seed to make the draw reproducible so the same rows are picked every run. All columns are preserved.",
+        "schemaSource": "upstream",
+        "sections": [
+          {
+            "label": "Sample",
+            "fields": [
+              {
+                "key": "percent",
+                "label": "Sample percent",
+                "kind": "number",
+                "required": true,
+                "defaultValue": 10,
+                "description": "0 to 100. Fractions allowed (e.g. 2.5)."
+              },
+              {
+                "key": "method",
+                "label": "Method",
+                "kind": "select",
+                "defaultValue": "reservoir",
+                "options": [
+                  {
+                    "label": "Reservoir (even probability per row)",
+                    "value": "reservoir"
+                  },
+                  {
+                    "label": "Bernoulli (independent per row)",
+                    "value": "bernoulli"
+                  }
+                ]
+              },
+              {
+                "key": "seed",
+                "label": "Seed (optional, for reproducibility)",
+                "kind": "integer",
+                "description": "Set a seed so the same rows are picked every run. Leave blank for a fresh random sample each run."
               }
             ]
           }

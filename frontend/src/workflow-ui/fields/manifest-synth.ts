@@ -3953,6 +3953,54 @@ function synthQualityCleanse(comp: ComponentDef): ComponentManifest {
             },
         ], 'upstream');
     }
+    if (id === 'qa.matchgroup') {
+        return base(comp, [
+            {
+                label: 'Match grouping',
+                fields: [
+                    { key: 'leftKey', label: 'Left id column', kind: 'column', defaultValue: 'id_a', description: 'Column naming the first record of each matched pair.' },
+                    { key: 'rightKey', label: 'Right id column', kind: 'column', defaultValue: 'id_b', description: 'Column naming the second record of each matched pair.' },
+                ],
+            },
+        ], 'upstream');
+    }
+    if (id === 'qa.expect') {
+        return base(comp, [
+            {
+                label: 'Expectations',
+                fields: [
+                    {
+                        key: 'rules',
+                        label: 'Rules',
+                        kind: 'key-value',
+                        required: true,
+                        description: 'column -> check. Checks: not_null, unique, non_negative, or with args after a colon: in_set:a,b,c | in_range:min,max | regex:pattern. Emits one scorecard row per rule (total, failed, pass_rate, passed).',
+                    },
+                ],
+            },
+        ], 'upstream');
+    }
+    if (id === 'qa.sample.adv') {
+        return base(comp, [
+            {
+                label: 'Sample',
+                fields: [
+                    { key: 'percent', label: 'Sample percent', kind: 'number', required: true, defaultValue: 10, description: '0 to 100. Fractions allowed (e.g. 2.5).' },
+                    {
+                        key: 'method',
+                        label: 'Method',
+                        kind: 'select',
+                        defaultValue: 'reservoir',
+                        options: [
+                            { label: 'Reservoir (even probability per row)', value: 'reservoir' },
+                            { label: 'Bernoulli (independent per row)', value: 'bernoulli' },
+                        ],
+                    },
+                    { key: 'seed', label: 'Seed (optional, for reproducibility)', kind: 'integer', description: 'Set a seed so the same rows are picked every run. Leave blank for a fresh random sample each run.' },
+                ],
+            },
+        ], 'upstream');
+    }
     if (id === 'qa.dedupe' || id === 'qa.match') {
         const isMatch = id === 'qa.match';
         return base(comp, [

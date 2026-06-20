@@ -8315,6 +8315,116 @@ fn survivor_builds_golden_record_live() {
     assert_eq!(phone, "222", "id=1 survives the most-recent phone, got {}", phone);
 }
 
+/// qa.matchgroup: transitive-closure clustering of matched record pairs. a~b
+/// and b~c collapse a, b, c into one cluster (rep = MIN id); a self-matched d
+/// stays its own cluster.
+#[test]
+fn matchgroup_clusters_pairs_live() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "pairs.csv", "id_a,id_b\na,b\nb,c\nd,d\n");
+    let out = out_path(tmp.path(), "clusters.csv");
+    let d = doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("g", "qa.matchgroup", json!({ "leftKey": "id_a", "rightKey": "id_b" })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "g"), main_edge("e2", "g", "k")]),
+    );
+    let r = engine.execute_pipeline(&d);
+    assert_eq!(r.status, "ok", "qa.matchgroup failed: {:?}", r.error);
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 4, "one cluster row per id");
+    let abc = count(&format!(
+        "(SELECT DISTINCT cluster_id FROM read_csv_auto('{}') WHERE id IN ('a','b','c'))",
+        out
+    ));
+    assert_eq!(abc, 1, "a, b, c must share one cluster");
+    let a_cluster = scalar_string(&format!("SELECT cluster_id FROM read_csv_auto('{}') WHERE id = 'a'", out));
+    assert_eq!(a_cluster, "a", "cluster rep should be the MIN id, got {}", a_cluster);
+    let d_cluster = scalar_string(&format!("SELECT cluster_id FROM read_csv_auto('{}') WHERE id = 'd'", out));
+    assert_eq!(d_cluster, "d", "isolated d should be its own cluster, got {}", d_cluster);
+}
+
+/// qa.expect: run an expectation suite over real data and read the scorecard
+/// back, including the unique rule's windowed branch.
+#[test]
+fn expect_scorecard_live() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(
+        tmp.path(),
+        "in.csv",
+        "id,email,amt,status\n1,a@x.com,5,paid\n2,,-3,pending\n3,bad,10,weird\n1,c@x.com,0,paid\n",
+    );
+    let out = out_path(tmp.path(), "scorecard.csv");
+    let d = doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("q", "qa.expect", json!({ "rules": [
+                { "column": "email",  "check": "not_null" },
+                { "column": "amt",    "check": "in_range", "args": { "min": 0, "max": 10 } },
+                { "column": "status", "check": "in_set",   "args": ["paid", "pending"] },
+                { "column": "amt",    "check": "non_negative" },
+                { "column": "id",     "check": "unique" }
+            ]})),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "q"), main_edge("e2", "q", "k")]),
+    );
+    let r = engine.execute_pipeline(&d);
+    assert_eq!(r.status, "ok", "qa.expect failed: {:?}", r.error);
+    assert_eq!(count(&format!("read_csv_auto('{}')", out)), 5, "one scorecard row per rule");
+    let q = |col: &str, exp: &str| {
+        format!("SELECT {} FROM read_csv_auto('{}') WHERE expectation = '{}'", col, out, exp)
+    };
+    assert_eq!(scalar_string(&q("failed", "not_null(email)")), "1");
+    assert_eq!(scalar_string(&q("pass_rate", "not_null(email)")), "0.75");
+    assert_eq!(scalar_string(&q("failed", "in_range(amt, 0, 10)")), "1");
+    assert_eq!(scalar_string(&q("failed", "in_set(status, 2 values)")), "1");
+    assert_eq!(scalar_string(&q("failed", "unique(id)")), "2");
+    assert_eq!(scalar_string(&q("pass_rate", "unique(id)")), "0.5");
+}
+
+/// qa.sample.adv: a seeded reservoir sample is reproducible (same seed selects
+/// the same rows) and returns the right fraction of the input.
+#[test]
+fn sample_adv_reproducible_live() {
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut body = String::from("id\n");
+    for i in 1..=200 {
+        body.push_str(&format!("{}\n", i));
+    }
+    let csv = write_file(tmp.path(), "in.csv", &body);
+    let run = |out: &str| {
+        let d = doc(
+            json!([
+                node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+                node("p", "qa.sample.adv", json!({ "percent": 10, "method": "reservoir", "seed": 42 })),
+                node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+            ]),
+            json!([main_edge("e1", "s", "p"), main_edge("e2", "p", "k")]),
+        );
+        let r = engine.execute_pipeline(&d);
+        assert_eq!(r.status, "ok", "qa.sample.adv failed: {:?}", r.error);
+    };
+    let out_a = out_path(tmp.path(), "a.csv");
+    let out_b = out_path(tmp.path(), "b.csv");
+    run(&out_a);
+    run(&out_b);
+    assert_eq!(count(&format!("read_csv_auto('{}')", out_a)), 20, "10% of 200 rows");
+    let h_a = scalar_string(&format!(
+        "SELECT md5(string_agg(CAST(id AS VARCHAR), ',' ORDER BY id)) FROM read_csv_auto('{}')",
+        out_a
+    ));
+    let h_b = scalar_string(&format!(
+        "SELECT md5(string_agg(CAST(id AS VARCHAR), ',' ORDER BY id)) FROM read_csv_auto('{}')",
+        out_b
+    ));
+    assert_eq!(h_a, h_b, "same seed must select the same rows: {} vs {}", h_a, h_b);
+}
+
 /// qa.mask: partial-mask + deterministic salted-hash anonymization, end to end.
 #[test]
 fn mask_anonymizes_columns_live() {
