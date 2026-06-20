@@ -990,6 +990,37 @@ fn run_errors_redact_secrets() {
 }
 
 #[test]
+fn export_includes_control_flow_steps() {
+    // Issue #7: ctl.* control-flow nodes carry a non-empty pass-through view,
+    // so the export used to omit their orchestration side effect (only empty-SQL
+    // stages got a procedural note). The export must document which sub-pipeline
+    // runs. (Pure compilation - no engine needed.)
+    use duckle_duckdb_engine::compile_pipeline_sql_opts;
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id\n1\n");
+    let d = doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("rj", "ctl.runjob", json!({ "pipelineRef": "child_job.duckle.json" })),
+            node("k", "snk.csv", json!({ "path": out_path(tmp.path(), "out.csv"), "hasHeader": true })),
+        ]),
+        json!([main_edge("e1", "s", "rj"), main_edge("e2", "rj", "k")]),
+    );
+    let stages = compile_pipeline_sql_opts(&d, false).expect("compile");
+    let all = stages.iter().map(|s| s.sql.clone()).collect::<Vec<_>>().join("\n");
+    assert!(
+        all.contains("child_job.duckle.json"),
+        "export must document the ctl.runjob sub-pipeline ref: {}",
+        all
+    );
+    assert!(
+        all.contains("control step"),
+        "export must include the procedural note for the control-flow stage: {}",
+        all
+    );
+}
+
+#[test]
 fn compiled_sql_maps_username_to_attach_user() {
     // The UI writes DB login names as `username`, while DuckDB's
     // Postgres/MySQL connection string expects `user=...`.

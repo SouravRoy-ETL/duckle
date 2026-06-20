@@ -3479,8 +3479,24 @@ pub fn compile_pipeline_sql_opts(
             // For the SQL export we annotate them so the exported script
             // reflects the WHOLE pipeline order, not just the parts that
             // lower to SQL - issue #7.
+            // Control-flow stages (ctl.runjob/iterate/foreach/parallelize/try)
+            // carry a non-empty PASS-THROUGH view so downstream wiring works,
+            // which would otherwise hide their orchestration side effect from
+            // the export. Prepend the procedural note to (not replace) their SQL
+            // so the export documents which sub-pipeline runs / fans out (#7).
             let sql = if s.sql.trim().is_empty() {
                 procedural_note(&s)
+            } else if matches!(
+                s.runtime.as_ref(),
+                Some(
+                    RuntimeSpec::RunJob { .. }
+                        | RuntimeSpec::Iterate { .. }
+                        | RuntimeSpec::Foreach { .. }
+                        | RuntimeSpec::Parallelize(_)
+                        | RuntimeSpec::InstallFallback(_)
+                )
+            ) {
+                format!("{}\n{}", procedural_note(&s), redact_secret_values(&s.sql, &secrets))
             } else {
                 redact_secret_values(&s.sql, &secrets)
             };
