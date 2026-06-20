@@ -1043,6 +1043,26 @@
             "orderBy prop must sort keys+tiebreak, not ALL, got: {}",
             fast_sql
         );
+        assert!(
+            fast_sql.trim_end().ends_with(", *"),
+            "orderBy prop must append a trailing `, *` all-column tiebreaker for a deterministic survivor, got: {}",
+            fast_sql
+        );
+    }
+
+    #[test]
+    fn setop_realigns_columns_by_name_without_invalid_syntax() {
+        // INTERSECT/EXCEPT BY NAME is a parser error in DuckDB; realign later
+        // legs to the first leg's columns via a 0-row UNION ALL BY NAME template
+        // and join with the plain set operator.
+        let mut ni = NodeInputs::default();
+        ni.ports.insert("main".into(), vec!["a".into(), "b".into()]);
+        let sql = build_setop(&ni, "INTERSECT").unwrap();
+        assert!(!sql.contains("INTERSECT BY NAME"), "must not emit invalid INTERSECT BY NAME, got: {}", sql);
+        assert!(sql.contains(" INTERSECT "), "must join legs with plain INTERSECT, got: {}", sql);
+        assert!(sql.contains("WHERE false UNION ALL BY NAME"), "must realign later legs by name, got: {}", sql);
+        let ex = build_setop(&ni, "EXCEPT").unwrap();
+        assert!(ex.contains(" EXCEPT ") && !ex.contains("EXCEPT BY NAME"), "got: {}", ex);
     }
 
     #[test]

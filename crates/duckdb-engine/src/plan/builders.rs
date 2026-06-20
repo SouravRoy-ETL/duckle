@@ -469,9 +469,12 @@ pub(crate) fn build_distinct(inputs: &NodeInputs, props: &JsonValue) -> Result<S
             "ORDER BY ALL".to_string()
         } else {
             // DISTINCT ON requires its keys to lead the ORDER BY; append the
-            // tiebreak columns after them for a deterministic survivor.
+            // tiebreak columns, then a trailing `*` (all remaining columns) so
+            // the survivor is fully deterministic even when (keys, tiebreak)
+            // is not unique within a group. `ORDER BY cols, *` is valid DuckDB
+            // (unlike `ORDER BY cols, ALL`).
             let tb = tiebreak.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
-            format!("ORDER BY {}, {}", on, tb)
+            format!("ORDER BY {}, {}, *", on, tb)
         };
         Ok(format!(
             "SELECT DISTINCT ON ({}) * FROM {} {}",
@@ -853,15 +856,22 @@ pub(crate) fn build_setop(inputs: &NodeInputs, op: &str) -> Result<String, Strin
     if mains.len() < 2 {
         return Err(format!("{} needs two inputs", op));
     }
-    // Match by column NAME, not position, mirroring build_union's UNION ALL BY
-    // NAME - otherwise INTERSECT/EXCEPT silently compare the wrong columns when
-    // the two inputs have a different column order.
-    let sep = format!(" {} BY NAME ", op);
-    Ok(mains
-        .iter()
-        .map(|id| format!("SELECT * FROM {}", quote_ident(id)))
-        .collect::<Vec<_>>()
-        .join(&sep))
+    // Match by column NAME, not position - otherwise INTERSECT/EXCEPT silently
+    // compare the wrong columns when the inputs have a different column order.
+    // DuckDB only accepts `BY NAME` after UNION (not INTERSECT/EXCEPT), so we
+    // realign every later leg to the first leg's columns via a 0-row
+    // `<first> WHERE false UNION ALL BY NAME <leg>` template, then join the legs
+    // with the plain set operator. (Plain `INTERSECT BY NAME` is a parser error.)
+    let first = quote_ident(mains[0]);
+    let mut parts = vec![format!("SELECT * FROM {}", first)];
+    for id in &mains[1..] {
+        parts.push(format!(
+            "SELECT * FROM (SELECT * FROM {f} WHERE false UNION ALL BY NAME SELECT * FROM {n})",
+            f = first,
+            n = quote_ident(id)
+        ));
+    }
+    Ok(parts.join(&format!(" {} ", op)))
 }
 
 pub(crate) fn build_window(
