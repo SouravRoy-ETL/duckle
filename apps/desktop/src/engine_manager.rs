@@ -334,14 +334,18 @@ const DUCKDB_EXTENSIONS: &[&str] = &[
 ];
 
 fn duckdb_command(bin: &Path) -> std::process::Command {
-    let mut cmd = std::process::Command::new(bin);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new(bin);
         // CREATE_NO_WINDOW: suppress the console flash on Windows.
         cmd.creation_flags(0x0800_0000);
+        cmd
     }
-    cmd
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new(bin)
+    }
 }
 
 /// Walk through every DuckDB extension Duckle needs, INSTALL+LOADing each
