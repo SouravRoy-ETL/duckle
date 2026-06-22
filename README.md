@@ -41,7 +41,7 @@
 **Get started**
 
 - [What is Duckle?](#what-is-duckle)
-- [What's new in v0.4.2](#whats-new-in-v042)
+- [What's new in v0.5.0](#whats-new-in-v050)
 - [Quickstart (60 s)](#quickstart-60-seconds)
 - [Download / Install](#download--install)
 - [Build from source](#build-from-source)
@@ -121,15 +121,20 @@ Three things make Duckle different from the heavyweights and the toy ETL tools:
 
 ---
 
-## What's new in v0.4.2
+## What's new in v0.5.0
 
-v0.4.2 makes the v0.4.1 fixes for #76, #77, and #80 work end to end.
+The biggest release since Duckle went cross-OS: a governance-grade studio with a data-quality / MDM pack, time-travel diffing, lineage, a web console, and bulk SQL Server writes. The component catalog now stands at 348.
 
-- **Materialize = View pushes down on duck sources (#76).** A single-consumer DuckDB / DuckLake / MotherDuck / Quack source set to View now compiles to a real lazy `CREATE VIEW` over the live source, so a downstream `WHERE` pushes into the source scan instead of loading the whole table (confirmed via `EXPLAIN`). Multi-consumer or non-batchable pipelines keep a materialized table (scanned once).
-- **Custom SQL respected on DuckLake / MotherDuck / Quack (#77).** A query typed into the SQL box now runs even with the Read mode left at its default, matching the DuckDB source - no table name required.
-- **Proxy you can set in the app (#80).** A new Settings panel (gear icon in the toolbar) sets an HTTP / HTTPS proxy per workspace, saved to `.duckle/settings.json` and applied immediately - no system environment variable needed. REST / cloud connectors and the updater route through it.
+- **Web Management Console (#75).** Run `duckle-runner serve` (or click the green "Open web dashboard" button) to operate every pipeline from a browser: a job-grouped overview with last status, schedule, duration, success-rate and per-job run history + logs, a runs timeline, and a built-in interval scheduler. No extra binary, no server, no auth.
+- **Time-travel + Data Diff.** Read any DuckLake table "AS OF" a snapshot or timestamp, browse snapshots, diff two snapshots (`src.ducklake.diff`) to see exactly what changed, and get a readable change summary (`xf.diffsummary`).
+- **Data Quality, Governance & MDM pack.** 17 new components: masking, survivorship, match groups, expectations, referential integrity, advanced profiling, record linkage, reconciliation, classification, data contracts, surrogate keys, labeled bucketize, SCD3, outlier detection, sessionization, and freshness checks. No external service or LLM.
+- **Bulk SQL Server writes (#86).** `snk.sqlserver` / `snk.synapse` now bulk-load through the DuckDB `mssql` community extension (TDS COPY) instead of row-by-row inserts. On by default; set `bulk: false` for the fully offline driver.
+- **Column-level lineage.** A whole-pipeline lineage resolver that stitches columns back to their root sources.
+- **Guided tour + redesigned console**, and a fix for the Windows startup console flash (Duckle no longer shells `git` at launch).
 
-Full notes: see the [v0.4.2 release](https://github.com/ducklelabs/duckle/releases/tag/v0.4.2). Earlier highlights (DuckDB 1.5.4, in-app updates, brand refresh) are in the [v0.4.1 release](https://github.com/ducklelabs/duckle/releases/tag/v0.4.1).
+Fixes: #7, #10, #39, #76, #82, #83, #84, and the #85 zh-CN update; set-operation `INTERSECT`/`EXCEPT`, secret redaction in logs, and 64-bit integer preservation in `code.javascript`.
+
+Full notes: see the [v0.5.0 release](https://github.com/ducklelabs/duckle/releases/tag/v0.5.0).
 
 ---
 
@@ -415,7 +420,7 @@ When the installer downloads the DuckDB CLI it also pre-fetches the extensions D
 
 ## Download / Install
 
-Pick the binary for your OS from the [latest release](https://github.com/ducklelabs/duckle/releases/tag/v0.4.2):
+Pick the binary for your OS from the [latest release](https://github.com/ducklelabs/duckle/releases/tag/v0.5.0):
 
 | OS | Asset | How to run |
 |---|---|---|
