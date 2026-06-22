@@ -70,9 +70,20 @@ fn detect_provider(url: &str) -> String {
 
 fn git_cmd(workspace: &Path) -> Command {
     let mut cmd = Command::new("git");
+    // Disable the fsmonitor daemon (`git status` would otherwise spawn a
+    // long-lived helper that flashes a console on some Windows setups).
+    cmd.args(["-c", "core.fsmonitor=false"]);
     cmd.current_dir(workspace);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    // Keep git fully non-interactive so it never spawns a credential-manager /
+    // askpass / prompt child (those pop their own window even when the parent
+    // git is windowless). We only ever run local, read-only commands here.
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    cmd.env("GCM_INTERACTIVE", "never");
+    cmd.env("GIT_ASKPASS", "");
+    cmd.env("SSH_ASKPASS", "");
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

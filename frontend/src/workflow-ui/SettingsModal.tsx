@@ -140,6 +140,22 @@ export function SettingsModal({
                             {error}
                         </p>
                     ) : null}
+                    <div style={{ borderTop: '1px solid var(--border-2, #2a2a2a)', margin: '16px 0 12px' }} />
+                    <label style={{ display: 'block', fontWeight: 600, marginBottom: 6 }}>Guided tour</label>
+                    <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, opacity: 0.7 }}>
+                        Replay the first-run walkthrough of the palette, canvas, properties, Run and the
+                        web dashboard.
+                    </p>
+                    <button
+                        type="button"
+                        style={btn}
+                        onClick={() => {
+                            onClose();
+                            setTimeout(() => window.dispatchEvent(new Event('duckle:start-tour')), 250);
+                        }}
+                    >
+                        Replay guided tour
+                    </button>
                 </div>
                 <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                     <button type="button" style={btn} onClick={onClose}>

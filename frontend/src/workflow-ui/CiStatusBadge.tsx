@@ -31,9 +31,18 @@ export default function CiStatusBadge({ workspacePath }: Props) {
     }, [workspacePath]);
 
     useEffect(() => {
-        void refresh();
+        // Defer the first poll off the launch path: this shells `git` to read the
+        // remote/branch, and on some Windows setups git's child processes
+        // (fsmonitor daemon, credential manager, askpass) briefly flash a console
+        // at startup. Polling a few seconds after the app is interactive avoids
+        // that jarring "is this malware?" flash; git_cmd is also hardened so the
+        // call itself stays silent.
+        const first = window.setTimeout(() => void refresh(), 5_000);
         const interval = window.setInterval(refresh, 30_000);
-        return () => window.clearInterval(interval);
+        return () => {
+            window.clearTimeout(first);
+            window.clearInterval(interval);
+        };
     }, [refresh]);
 
     if (!workspacePath || loading) return null;
