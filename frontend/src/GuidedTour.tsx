@@ -145,25 +145,44 @@ export function GuidedTour() {
     const next = () => (last ? close() : setI((n) => n + 1));
     const back = () => setI((n) => Math.max(0, n - 1));
 
-    // Tooltip position: anchored beside the spotlight, or centered.
-    const PAD = 8;
+    // Tooltip position: anchored beside the spotlight, then ALWAYS clamped into
+    // the viewport so the card (and its Skip/Back/Next buttons) is reachable even
+    // when the target fills the screen (e.g. the canvas). Very large targets get
+    // a centered card since "beside" has no room.
+    const PAD = 10;
     const TIP_W = 340;
+    const TIP_H = 280; // generous estimate used only for clamping
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
     let tipStyle: React.CSSProperties;
-    if (!box) {
+    const big = !!box && box.height > vh * 0.7 && box.width > vw * 0.45;
+    if (!box || big) {
         tipStyle = { top: '50%', left: '50%', transform: 'translate(-50%,-50%)' };
     } else {
         const place = step.placement ?? 'bottom';
-        const vh = window.innerHeight;
-        const vw = window.innerWidth;
+        let top: number;
+        let left: number;
         if (place === 'right' && box.left + box.width + TIP_W + 24 < vw) {
-            tipStyle = { top: Math.min(box.top, vh - 220), left: box.left + box.width + PAD + 12 };
+            left = box.left + box.width + PAD;
+            top = box.top;
         } else if (place === 'left' && box.left - TIP_W - 24 > 0) {
-            tipStyle = { top: Math.min(box.top, vh - 220), left: Math.max(12, box.left - TIP_W - PAD - 12) };
-        } else if (place === 'top' && box.top - 200 > 0) {
-            tipStyle = { top: box.top - 200, left: Math.min(box.left, vw - TIP_W - 24) };
+            left = box.left - TIP_W - PAD;
+            top = box.top;
+        } else if (place === 'top' && box.top - TIP_H - PAD > 0) {
+            top = box.top - TIP_H - PAD;
+            left = box.left;
         } else {
-            tipStyle = { top: box.top + box.height + PAD + 12, left: Math.min(Math.max(12, box.left), vw - TIP_W - 24) };
+            // bottom (default); if it would overflow, flip above the target
+            top = box.top + box.height + PAD;
+            left = box.left;
+            if (top + TIP_H + 12 > vh && box.top - TIP_H - PAD > 0) {
+                top = box.top - TIP_H - PAD;
+            }
         }
+        // Final guard: keep the whole card on screen.
+        top = Math.max(12, Math.min(top, vh - TIP_H - 12));
+        left = Math.max(12, Math.min(left, vw - TIP_W - 12));
+        tipStyle = { top, left };
     }
 
     return (
