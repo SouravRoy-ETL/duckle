@@ -2248,9 +2248,13 @@ export default function App() {
                     edges={edges}
                     initialState={
                         {
+                            // outputs first so a saved mapper missing it (e.g. an
+                            // AI- or hand-authored node) still yields a valid array
+                            // and never crashes the modal (#93).
+                            outputs: [] as MappingRow[],
                             ...((mapperNode.data.properties?.mapper as
                                 | MapperState
-                                | undefined) ?? { outputs: [] as MappingRow[] }),
+                                | undefined) ?? {}),
                             lookups:
                                 (mapperNode.data.properties?.lookups as
                                     | LookupConfig[]

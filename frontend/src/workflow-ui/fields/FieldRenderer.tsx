@@ -1,4 +1,4 @@
-import { useContext } from 'react';
+import { Component, useContext } from 'react';
 import type { Field, Aggregation } from './types';
 import {
     BoolField,
@@ -47,13 +47,15 @@ export default function FieldRenderer({ field, value, onChange }: Props) {
                 {field.label}
                 {field.required ? <span className="form-field-required">*</span> : null}
             </label>
-            {BINDABLE.has(field.kind) ? (
-                <ContextBindable value={value} onChange={onChange}>
-                    {(v, oc) => renderInput(field, v, oc)}
-                </ContextBindable>
-            ) : (
-                renderInput(field, value, onChange)
-            )}
+            <FieldErrorBoundary label={field.label}>
+                {BINDABLE.has(field.kind) ? (
+                    <ContextBindable value={value} onChange={onChange}>
+                        {(v, oc) => renderInput(field, v, oc)}
+                    </ContextBindable>
+                ) : (
+                    renderInput(field, value, onChange)
+                )}
+            </FieldErrorBoundary>
             {BINDABLE.has(field.kind) ? <ResolvedHint value={value} /> : null}
             {field.kind === 'save-path' && !value ? (
                 <div className="form-field-desc">
@@ -67,6 +69,35 @@ export default function FieldRenderer({ field, value, onChange }: Props) {
             ) : null}
         </div>
     );
+}
+
+/**
+ * Contains a single field's render so a malformed saved value (e.g. a pipeline
+ * hand-edited or AI/MCP-generated with the wrong shape - issue #93) shows an
+ * inline notice instead of black-screening the whole app.
+ */
+class FieldErrorBoundary extends Component<
+    { label: string; children: React.ReactNode },
+    { failed: boolean }
+> {
+    state = { failed: false };
+    static getDerivedStateFromError() {
+        return { failed: true };
+    }
+    componentDidCatch(err: unknown) {
+        console.error('Field render failed:', this.props.label, err);
+    }
+    render() {
+        if (this.state.failed) {
+            return (
+                <div className="form-field-desc" style={{ color: 'var(--danger, #ff4d6d)' }}>
+                    Could not display this field - its saved value has an unexpected format. Edit the
+                    pipeline JSON to fix it.
+                </div>
+            );
+        }
+        return this.props.children;
+    }
 }
 
 const PLACEHOLDER_RE = /\$\{([^}]+)\}/g;

@@ -124,12 +124,14 @@ function computeNodeSchema(
         const mapper = props.mapper as
             | { outputs?: Array<{ name: string; type: DataType }> }
             | undefined;
-        if (mapper?.outputs && mapper.outputs.length > 0) {
-            return mapper.outputs.map(o => ({
-                name: o.name || 'col',
-                type: o.type,
-                nullable: true,
-            }));
+        if (Array.isArray(mapper?.outputs) && mapper.outputs.length > 0) {
+            return mapper.outputs
+                .filter((o): o is { name: string; type: DataType } => Boolean(o))
+                .map(o => ({
+                    name: o.name || 'col',
+                    type: o.type,
+                    nullable: true,
+                }));
         }
         return node.data.schema ?? upstream();
     }
