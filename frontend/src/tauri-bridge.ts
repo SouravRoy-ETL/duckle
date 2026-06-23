@@ -374,6 +374,7 @@ export type ChatEvent =
 export async function chatSend(
     history: ChatMessage[],
     onEvent: (e: ChatEvent) => void,
+    workspace?: string | null,
 ): Promise<void> {
     if (!isTauri()) {
         onEvent({ kind: 'error', message: 'Chat is only available in the desktop app.' });
@@ -382,7 +383,8 @@ export async function chatSend(
     const channel = new Channel<ChatEvent>();
     channel.onmessage = onEvent;
     try {
-        await invoke('chat_send', { history, onEvent: channel });
+        // workspace lets the backend route to an external AI endpoint if configured (#92).
+        await invoke('chat_send', { history, onEvent: channel, workspace: workspace ?? null });
     } catch (err) {
         onEvent({ kind: 'error', message: String(err) });
     }
@@ -753,4 +755,31 @@ export async function settingsGetProxy(workspace: string): Promise<string | null
  */
 export async function settingsSetProxy(workspace: string, url: string | null): Promise<void> {
     await invoke('settings_set_proxy', { workspace, url });
+}
+
+// ---- External AI endpoint for the Duckie assistant (#92) ----------------
+
+export type AiConfig = { baseUrl: string | null; model: string | null; apiKey: string | null };
+
+/** Read the workspace's external OpenAI-compatible AI config (empty = local Qwen). */
+export async function settingsGetAi(workspace: string): Promise<AiConfig> {
+    if (!isTauri() || !workspace) return { baseUrl: null, model: null, apiKey: null };
+    try {
+        return await invoke<AiConfig>('settings_get_ai', { workspace });
+    } catch {
+        return { baseUrl: null, model: null, apiKey: null };
+    }
+}
+
+/** Persist the external AI endpoint. Empty baseUrl reverts to the local model. */
+export async function settingsSetAi(
+    workspace: string,
+    cfg: { baseUrl: string | null; model: string | null; apiKey: string | null },
+): Promise<void> {
+    await invoke('settings_set_ai', {
+        workspace,
+        baseUrl: cfg.baseUrl,
+        model: cfg.model,
+        apiKey: cfg.apiKey,
+    });
 }

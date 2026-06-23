@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Loader2, Check } from 'lucide-react';
-import { settingsGetProxy, settingsSetProxy } from '../tauri-bridge';
+import { settingsGetProxy, settingsSetProxy, settingsGetAi, settingsSetAi } from '../tauri-bridge';
 
 /**
  * App settings. Currently a single HTTP/HTTPS proxy field, persisted per
@@ -17,6 +17,10 @@ export function SettingsModal({
     onClose: () => void;
 }) {
     const [proxy, setProxy] = useState('');
+    // #92: external OpenAI-compatible AI endpoint for the Duckie assistant.
+    const [aiBaseUrl, setAiBaseUrl] = useState('');
+    const [aiModel, setAiModel] = useState('');
+    const [aiKey, setAiKey] = useState('');
     const [loaded, setLoaded] = useState(false);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
@@ -28,12 +32,14 @@ export function SettingsModal({
             setLoaded(true);
             return;
         }
-        settingsGetProxy(workspace)
-            .then(v => {
-                if (alive) {
-                    setProxy(v ?? '');
-                    setLoaded(true);
-                }
+        Promise.all([settingsGetProxy(workspace), settingsGetAi(workspace)])
+            .then(([p, ai]) => {
+                if (!alive) return;
+                setProxy(p ?? '');
+                setAiBaseUrl(ai.baseUrl ?? '');
+                setAiModel(ai.model ?? '');
+                setAiKey(ai.apiKey ?? '');
+                setLoaded(true);
             })
             .catch(e => {
                 if (alive) {
@@ -53,6 +59,11 @@ export function SettingsModal({
         setSaved(false);
         try {
             await settingsSetProxy(workspace, proxy.trim() || null);
+            await settingsSetAi(workspace, {
+                baseUrl: aiBaseUrl.trim() || null,
+                model: aiModel.trim() || null,
+                apiKey: aiKey.trim() || null,
+            });
             setSaved(true);
             setTimeout(() => setSaved(false), 1500);
         } catch (e) {
@@ -82,6 +93,15 @@ export function SettingsModal({
         background: 'var(--accent, #ff7a45)',
         borderColor: 'var(--accent, #ff7a45)',
         color: '#0a0a0a',
+    };
+    const aiInput: React.CSSProperties = {
+        width: '100%',
+        padding: '8px 10px',
+        borderRadius: 8,
+        border: '1px solid var(--border-2, #2a2a2a)',
+        background: 'var(--bg-1, #14161c)',
+        color: 'inherit',
+        boxSizing: 'border-box',
     };
 
     return createPortal(
@@ -140,6 +160,45 @@ export function SettingsModal({
                             {error}
                         </p>
                     ) : null}
+                    <div style={{ borderTop: '1px solid var(--border-2, #2a2a2a)', margin: '16px 0 12px' }} />
+                    <label style={{ display: 'block', fontWeight: 600, marginBottom: 6 }}>
+                        AI assistant endpoint
+                    </label>
+                    <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, opacity: 0.7 }}>
+                        Point Duckie at an external OpenAI-compatible API (OpenAI, Ollama, LM Studio,
+                        vLLM, ...) instead of the bundled local model. Leave the base URL empty to use
+                        the local Qwen model.
+                    </p>
+                    <input
+                        type="text"
+                        value={aiBaseUrl}
+                        onChange={e => setAiBaseUrl(e.target.value)}
+                        placeholder="Base URL, e.g. https://api.openai.com"
+                        disabled={!loaded || !workspace}
+                        spellCheck={false}
+                        autoComplete="off"
+                        style={aiInput}
+                    />
+                    <input
+                        type="text"
+                        value={aiModel}
+                        onChange={e => setAiModel(e.target.value)}
+                        placeholder="Model, e.g. gpt-4o-mini"
+                        disabled={!loaded || !workspace}
+                        spellCheck={false}
+                        autoComplete="off"
+                        style={{ ...aiInput, marginTop: 8 }}
+                    />
+                    <input
+                        type="password"
+                        value={aiKey}
+                        onChange={e => setAiKey(e.target.value)}
+                        placeholder="API key (sent as a Bearer token)"
+                        disabled={!loaded || !workspace}
+                        spellCheck={false}
+                        autoComplete="off"
+                        style={{ ...aiInput, marginTop: 8 }}
+                    />
                     <div style={{ borderTop: '1px solid var(--border-2, #2a2a2a)', margin: '16px 0 12px' }} />
                     <label style={{ display: 'block', fontWeight: 600, marginBottom: 6 }}>Guided tour</label>
                     <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, opacity: 0.7 }}>

@@ -10,6 +10,7 @@ import {
     type EngineStatus,
     type InstallProgress,
 } from '../tauri-bridge';
+import { getWorkspacePath } from '../workspace';
 
 type Props = {
     onClose: () => void;
@@ -137,7 +138,7 @@ export default function ChatPanel({ onClose, onInsertPipeline }: Props) {
                 });
                 setBusy(false);
             }
-        });
+        }, getWorkspacePath());
     }, [draft, busy, messages, setup.phase]);
 
     // Esc closes the panel.

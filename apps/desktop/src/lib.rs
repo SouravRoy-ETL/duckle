@@ -168,6 +168,8 @@ pub fn run() {
             secrets::connection_decrypt_payload,
             app_settings::settings_get_proxy,
             app_settings::settings_set_proxy,
+            app_settings::settings_get_ai,
+            app_settings::settings_set_ai,
             workspace_ci_status,
             check_for_update,
             build_pipeline_bundle,
@@ -575,7 +577,28 @@ async fn chat_send(
     app: tauri::AppHandle,
     history: Vec<ChatMessage>,
     on_event: Channel<ChatEvent>,
+    workspace: Option<String>,
 ) -> Result<(), String> {
+    // #92: route to an external OpenAI-compatible endpoint when one is
+    // configured for this workspace, instead of booting the local Qwen model.
+    let (base, model, key) = app_settings::ai_config(workspace.as_deref().unwrap_or(""));
+    if let Some(base) = base {
+        let endpoint = format!("{}/v1/chat/completions", base.trim_end_matches('/'));
+        let model = model.unwrap_or_else(|| "gpt-4o-mini".to_string());
+        return tokio::task::spawn_blocking(move || {
+            if let Err(e) =
+                llama_chat::chat_stream(&endpoint, key.as_deref(), &model, &history, |evt| {
+                    let _ = on_event.send(evt);
+                })
+            {
+                let _ = on_event.send(ChatEvent::Error { message: e.clone() });
+                return Err(e);
+            }
+            Ok::<(), String>(())
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let bin = engine_manager::llamacpp_path(&dir);
     let model = engine_manager::llama_model_path(&dir);
@@ -599,7 +622,8 @@ async fn chat_send(
                 guard.as_ref().unwrap().port()
             }
         };
-        if let Err(e) = llama_chat::chat_stream(port, &history, |evt| {
+        let url = format!("http://127.0.0.1:{}/v1/chat/completions", port);
+        if let Err(e) = llama_chat::chat_stream(&url, None, "qwen2.5-coder", &history, |evt| {
             let _ = on_event.send(evt);
         }) {
             let _ = on_event.send(ChatEvent::Error { message: e.clone() });

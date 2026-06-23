@@ -14,6 +14,24 @@ struct AppSettings {
     /// HTTP/HTTPS proxy URL, e.g. "http://user:pass@proxy:8080". None / empty
     /// means a direct connection.
     https_proxy: Option<String>,
+    /// #92: optional external OpenAI-compatible endpoint for the Duckie AI
+    /// assistant (base URL, e.g. https://api.openai.com or an Ollama/LM Studio
+    /// URL). When set, chat goes to it instead of the local Qwen model.
+    ai_base_url: Option<String>,
+    /// Model id for the external endpoint (e.g. "gpt-4o-mini", "llama3.1").
+    ai_model: Option<String>,
+    /// API key for the external endpoint (sent as `Authorization: Bearer ...`).
+    /// Stored alongside the proxy creds in the workspace's local .duckle dir.
+    ai_api_key: Option<String>,
+}
+
+/// The external-AI config returned to the Settings UI. camelCase for JS.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiConfig {
+    pub base_url: Option<String>,
+    pub model: Option<String>,
+    pub api_key: Option<String>,
 }
 
 fn settings_path(workspace: &Path) -> PathBuf {
@@ -72,4 +90,47 @@ pub fn settings_set_proxy(workspace: String, url: Option<String>) -> Result<(), 
     // Apply immediately so the current session uses it without a relaunch.
     duckle_duckdb_engine::tls::set_proxy(url);
     Ok(())
+}
+
+#[tauri::command]
+pub fn settings_get_ai(workspace: String) -> AiConfig {
+    if workspace.is_empty() {
+        return AiConfig::default();
+    }
+    let s = load(Path::new(&workspace));
+    let clean = |o: Option<String>| o.map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
+    AiConfig {
+        base_url: clean(s.ai_base_url),
+        model: clean(s.ai_model),
+        api_key: clean(s.ai_api_key),
+    }
+}
+
+#[tauri::command]
+pub fn settings_set_ai(
+    workspace: String,
+    base_url: Option<String>,
+    model: Option<String>,
+    api_key: Option<String>,
+) -> Result<(), String> {
+    if workspace.is_empty() {
+        return Err("no workspace is open".into());
+    }
+    let clean = |o: Option<String>| o.map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
+    let mut s = load(Path::new(&workspace));
+    s.ai_base_url = clean(base_url);
+    s.ai_model = clean(model);
+    s.ai_api_key = clean(api_key);
+    store(Path::new(&workspace), &s)
+}
+
+/// Internal: the workspace's external-AI config (base_url, model, api_key) for
+/// chat routing. All None when no external endpoint is configured.
+pub fn ai_config(workspace: &str) -> (Option<String>, Option<String>, Option<String>) {
+    if workspace.is_empty() {
+        return (None, None, None);
+    }
+    let s = load(Path::new(workspace));
+    let clean = |o: Option<String>| o.map(|x| x.trim().to_string()).filter(|x| !x.is_empty());
+    (clean(s.ai_base_url), clean(s.ai_model), clean(s.ai_api_key))
 }

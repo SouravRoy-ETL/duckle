@@ -231,7 +231,9 @@ pub struct ChatMessage {
 /// stream tokens out via the `on_event` callback as they arrive. The
 /// system prompt is prepended automatically.
 pub fn chat_stream<F: FnMut(ChatEvent)>(
-    port: u16,
+    endpoint: &str,
+    api_key: Option<&str>,
+    model: &str,
     history: &[ChatMessage],
     mut on_event: F,
 ) -> Result<(), String> {
@@ -247,16 +249,21 @@ pub fn chat_stream<F: FnMut(ChatEvent)>(
         }));
     }
     let body = serde_json::json!({
-        "model": "qwen2.5-coder",
+        "model": model,
         "messages": messages,
         "stream": true,
         "temperature": 0.2,
         "top_p": 0.9,
     });
-    let url = format!("http://127.0.0.1:{}/v1/chat/completions", port);
-    let resp = ureq::post(&url)
+    // #92: works for the local llama-server or an external OpenAI-compatible
+    // endpoint (the caller passes the full chat-completions URL + optional key).
+    let mut req = ureq::post(endpoint)
         .set("Content-Type", "application/json")
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_secs(300));
+    if let Some(key) = api_key {
+        req = req.set("Authorization", &format!("Bearer {}", key));
+    }
+    let resp = req
         .send_string(&body.to_string())
         .map_err(|e| format!("chat send: {}", e))?;
     let reader = BufReader::new(resp.into_reader());
