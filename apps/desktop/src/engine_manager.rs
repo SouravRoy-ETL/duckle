@@ -630,6 +630,38 @@ fn install_spec<F: FnMut(InstallProgress)>(
         let _ = std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755));
     }
 
+    // macOS (#89): Apple Silicon refuses to launch a downloaded executable that
+    // isn't validly signed - it gets SIGKILL'd on exec, which surfaces as the
+    // llama-server "didn't become ready" timeout (DuckDB's own binaries are
+    // notarized, so pipelines work, but the llama.cpp release binaries are not).
+    // Drop any quarantine flag and ad-hoc re-sign the binary + its sibling
+    // dylibs so the kernel allows execution. Best-effort: codesign/xattr are
+    // standard on macOS but a failure here shouldn't abort the install.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("xattr")
+            .args(["-dr", "com.apple.quarantine"])
+            .arg(&dir)
+            .output();
+        // Sign dependent dylibs first, then the executable (it seals its own
+        // load commands once signed).
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().map(|x| x == "dylib").unwrap_or(false) {
+                    let _ = std::process::Command::new("codesign")
+                        .args(["--force", "--sign", "-"])
+                        .arg(&p)
+                        .output();
+                }
+            }
+        }
+        let _ = std::process::Command::new("codesign")
+            .args(["--force", "--sign", "-"])
+            .arg(&target)
+            .output();
+    }
+
     // Verify the binary landed and is non-empty. Probing --version is
     // best-effort: DuckDB supports it; we don't assume every engine does,
     // so a non-zero --version isn't fatal as long as the file is there.
