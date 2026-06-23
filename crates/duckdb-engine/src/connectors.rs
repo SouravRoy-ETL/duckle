@@ -2299,6 +2299,53 @@ impl DuckdbEngine {
     /// which case it's parsed and used verbatim. Each row is written
     /// as one Avro record; the OCF format embeds the schema in the
     /// header so the file is self-describing.
+    /// snk.qvd (#88): write upstream rows to a Qlik QVD file via crate::qvd.
+    pub(crate) fn run_qvd_sink(
+        &self,
+        db: &Path,
+        spec: &QvdSinkSpec,
+    ) -> Result<String, EngineError> {
+        let view = plan::quote_ident(&spec.from_view);
+        // DESCRIBE for column order + types, so we (a) keep the schema even for a
+        // 0-row table and (b) cast HUGEINT/UHUGEINT to BIGINT: DuckDB's CLI -json
+        // prints HUGEINT as a quoted string (read_json_auto infers HUGEINT), which
+        // would otherwise land integer columns in the QVD as text.
+        let desc = self
+            .run_rows(Some(db), &format!("DESCRIBE SELECT * FROM {}", view))?;
+        let mut columns: Vec<String> = Vec::new();
+        let mut replaces: Vec<String> = Vec::new();
+        for r in &desc {
+            let Some(o) = r.as_object() else { continue };
+            let name = o
+                .get("column_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let ty = o
+                .get("column_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_uppercase();
+            if ty.contains("HUGEINT") {
+                let q = plan::quote_ident(&name);
+                replaces.push(format!("CAST({q} AS BIGINT) AS {q}"));
+            }
+            columns.push(name);
+        }
+        let select = if replaces.is_empty() {
+            format!("SELECT * FROM {}", view)
+        } else {
+            format!("SELECT * REPLACE ({}) FROM {}", replaces.join(", "), view)
+        };
+        let rows = self.run_rows(Some(db), &select)?;
+        crate::qvd::write_file(std::path::Path::new(&spec.path), &columns, &rows)
+            .map_err(|e| EngineError::Query(format!("qvd: {}", e)))?;
+        Ok(format!("qvd: wrote {} records to {}", rows.len(), spec.path))
+    }
+
     pub(crate) fn run_avro_sink(
         &self,
         db: &Path,

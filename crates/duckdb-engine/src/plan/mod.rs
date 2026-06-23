@@ -147,6 +147,7 @@ pub enum RuntimeSpec {
     XmlSource(XmlSourceSpec),
     XmlSink(XmlSinkSpec),
     AvroSink(AvroSinkSpec),
+    QvdSink(QvdSinkSpec),
     RabbitSink(RabbitSinkSpec),
     RabbitSource(RabbitSourceSpec),
     GitSource(GitSourceSpec),
@@ -741,6 +742,7 @@ fn build_stage(
     let mut xml_source: Option<XmlSourceSpec> = None;
     let mut xml_sink: Option<XmlSinkSpec> = None;
     let mut avro_sink: Option<AvroSinkSpec> = None;
+    let mut qvd_sink: Option<QvdSinkSpec> = None;
     let mut rabbit_sink: Option<RabbitSinkSpec> = None;
     let mut rabbit_source: Option<RabbitSourceSpec> = None;
     let mut git_source: Option<GitSourceSpec> = None;
@@ -1449,6 +1451,18 @@ fn build_stage(
             record_name: string_prop(&props, "recordName")
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "Row".into()),
+        });
+        (String::new(), StageKind::Sink, Some(from_view.to_string()))
+    } else if component_id == "snk.qvd" {
+        // Qlik QVD writer via the clean-room crate::qvd encoder. Column order
+        // follows the first row; the QVD carries its own schema.
+        let from_view = inputs.main().ok_or_else(|| missing_input(node, "main"))?;
+        let path = string_prop(&props, "path")
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| EngineError::Config(format!("{}: path required", component_id)))?;
+        qvd_sink = Some(QvdSinkSpec {
+            from_view: from_view.to_string(),
+            path,
         });
         (String::new(), StageKind::Sink, Some(from_view.to_string()))
     } else if component_id == "snk.nats" {
@@ -3498,6 +3512,7 @@ fn build_stage(
         .or_else(|| xml_source.map(RuntimeSpec::XmlSource))
         .or_else(|| xml_sink.map(RuntimeSpec::XmlSink))
         .or_else(|| avro_sink.map(RuntimeSpec::AvroSink))
+        .or_else(|| qvd_sink.map(RuntimeSpec::QvdSink))
         .or_else(|| rabbit_sink.map(RuntimeSpec::RabbitSink))
         .or_else(|| rabbit_source.map(RuntimeSpec::RabbitSource))
         .or_else(|| git_source.map(RuntimeSpec::GitSource))

@@ -40,6 +40,7 @@ const PATH_REQUIRED_SINKS = new Set<string>([
     'snk.yaml',
     'snk.toml',
     'snk.avro',
+    'snk.qvd',
     'snk.spatial',
 ]);
 

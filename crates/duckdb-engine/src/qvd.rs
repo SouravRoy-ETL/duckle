@@ -9,10 +9,13 @@
 //!      end of the file, each record packing one symbol index per field.
 //!
 //! No Qlik runtime or external/Python dependency: the format is decoded directly
-//! from the public spec. Verified byte-for-byte against a pyqvd-written fixture.
+//! from the public spec. Both the reader and writer are verified by round-trip
+//! and cross-checked against the third-party pyqvd library.
 
 use serde_json::{Map, Number, Value};
+use std::collections::HashMap;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 struct FieldMeta {
     name: String,
@@ -34,6 +37,10 @@ pub fn read_file(path: &Path) -> Result<Vec<Value>, String> {
     let header =
         std::str::from_utf8(&data[..end]).map_err(|_| "QVD header is not valid UTF-8".to_string())?;
     let (nrec, rbs, fields) = parse_header(header)?;
+    if fields.is_empty() {
+        // A 0-column table (e.g. an empty result set) carries no rows.
+        return Ok(Vec::new());
+    }
 
     // Symbol table begins right after the header + its \r\n\0 terminator.
     let mut p = end;
@@ -65,15 +72,14 @@ pub fn read_file(path: &Path) -> Result<Vec<Value>, String> {
         let rec = &data[idx_start + r * rbs..idx_start + (r + 1) * rbs];
         let mut obj = Map::with_capacity(fields.len());
         for (fi, f) in fields.iter().enumerate() {
-            let value = if f.bias == -2 {
-                Value::Null
+            // Per cell: index = raw bits + Bias. Nullable fields carry Bias=-2
+            // and store NULL rows as raw 0 (-> index -2); any index outside the
+            // symbol range (the NULL sentinel, or an unused slot) reads as NULL.
+            let idx = read_bits(rec, f.bit_offset, f.bit_width) as i64 + f.bias;
+            let value = if idx >= 0 && (idx as usize) < symbols[fi].len() {
+                symbols[fi][idx as usize].clone()
             } else {
-                let idx = read_bits(rec, f.bit_offset, f.bit_width) as i64 + f.bias;
-                if idx >= 0 && (idx as usize) < symbols[fi].len() {
-                    symbols[fi][idx as usize].clone()
-                } else {
-                    Value::Null
-                }
+                Value::Null
             };
             obj.insert(f.name.clone(), value);
         }
@@ -86,19 +92,19 @@ fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Read `bit_width` bits at `bit_offset` (from the record's LSB). The record's
-/// bytes are one big-endian integer (byte 0 is most significant), matching how
-/// QVD packs the index.
+/// Read `bit_width` bits at `bit_offset` from a record. A record's bytes are one
+/// little-endian integer (byte 0 holds bits 0..8, byte 1 holds bits 8..16, ...),
+/// and fields are packed from the LSB up - matching how QVD writes the index.
 fn read_bits(rec: &[u8], bit_offset: usize, bit_width: usize) -> u64 {
     let mut v: u64 = 0;
     let n = rec.len();
     for k in 0..bit_width.min(64) {
         let bit = bit_offset + k;
-        let from_end = bit / 8;
-        if from_end >= n {
+        let byte = bit / 8;
+        if byte >= n {
             break;
         }
-        let set = (rec[n - 1 - from_end] >> (bit % 8)) & 1;
+        let set = (rec[byte] >> (bit % 8)) & 1;
         v |= (set as u64) << k;
     }
     v
@@ -204,15 +210,19 @@ fn parse_header(xml: &str) -> Result<(usize, usize, Vec<FieldMeta>), String> {
                 cur.clear();
             }
             Ok(Event::Text(t)) => {
-                let txt = t.unescape().map_err(|e| e.to_string())?;
-                let txt = txt.trim();
+                let raw = t.unescape().map_err(|e| e.to_string())?;
+                let txt = raw.trim();
+                // Whitespace-only text events sit between pretty-printed tags;
+                // skip them. FieldName uses the RAW text so a column named with
+                // leading/trailing spaces keeps them (values are written inline,
+                // so raw has no stray indentation).
                 if txt.is_empty() {
                     continue;
                 }
                 if in_field {
                     if let Some(f) = fields.last_mut() {
                         match cur.as_str() {
-                            "FieldName" => f.name = txt.to_string(),
+                            "FieldName" => f.name = raw.to_string(),
                             "Offset" => f.offset = txt.parse().unwrap_or(0),
                             "NoOfSymbols" => f.no_of_symbols = txt.parse().unwrap_or(0),
                             "BitOffset" => f.bit_offset = txt.parse().unwrap_or(0),
@@ -234,10 +244,318 @@ fn parse_header(xml: &str) -> Result<(usize, usize, Vec<FieldMeta>), String> {
             _ => {}
         }
     }
-    if fields.is_empty() {
-        return Err("QVD: header has no fields".into());
-    }
     Ok((nrec, rbs, fields))
+}
+
+// ===================== writer (snk.qvd) =====================
+
+/// One distinct symbol value, typed the way QVD stores it.
+enum Sym {
+    Int(i32),
+    Double(f64),
+    Str(String),
+}
+
+impl Sym {
+    /// Dedup key: same type + same value share one symbol (int 3 and double 3.0
+    /// are distinct symbols, as in Qlik).
+    fn key(&self) -> String {
+        match self {
+            Sym::Int(i) => format!("i{}", i),
+            Sym::Double(d) => format!("d{}", d.to_bits()),
+            Sym::Str(s) => format!("s{}", s),
+        }
+    }
+    fn emit(&self, out: &mut Vec<u8>) {
+        match self {
+            Sym::Int(i) => {
+                out.push(1);
+                out.extend_from_slice(&i.to_le_bytes());
+            }
+            Sym::Double(d) => {
+                out.push(2);
+                out.extend_from_slice(&d.to_le_bytes());
+            }
+            Sym::Str(s) => {
+                out.push(4);
+                out.extend_from_slice(s.as_bytes());
+                out.push(0);
+            }
+        }
+    }
+    fn byte_len(&self) -> usize {
+        match self {
+            Sym::Int(_) => 5,
+            Sym::Double(_) => 9,
+            Sym::Str(s) => s.len() + 2,
+        }
+    }
+}
+
+/// Classify a JSON value as a QVD symbol. None means NULL (not stored). Integers
+/// outside i32 are promoted to double (QVD's int symbol is a 32-bit int; this is
+/// what Qlik does too - all numbers are doubles internally). Arrays/objects, which
+/// QVD's flat model has no slot for, are stored as their JSON text.
+fn classify(v: &Value) -> Option<Sym> {
+    match v {
+        Value::Null => None,
+        Value::Bool(b) => Some(Sym::Int(if *b { 1 } else { 0 })),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                if (i32::MIN as i64..=i32::MAX as i64).contains(&i) {
+                    Some(Sym::Int(i as i32))
+                } else {
+                    Some(Sym::Double(i as f64))
+                }
+            } else if let Some(u) = n.as_u64() {
+                if u <= i32::MAX as u64 {
+                    Some(Sym::Int(u as i32))
+                } else {
+                    Some(Sym::Double(u as f64))
+                }
+            } else {
+                Some(Sym::Double(n.as_f64().unwrap_or(0.0)))
+            }
+        }
+        Value::String(s) => Some(Sym::Str(s.clone())),
+        other => Some(Sym::Str(other.to_string())),
+    }
+}
+
+/// Bits needed to hold values 0..=max (0 for max 0).
+fn bits_needed(max: u64) -> usize {
+    if max == 0 {
+        0
+    } else {
+        64 - max.leading_zeros() as usize
+    }
+}
+
+struct WCol {
+    name: String,
+    symbols: Vec<Sym>,
+    index_of: HashMap<String, usize>,
+    has_null: bool,
+    bit_offset: usize,
+    bit_width: usize,
+    bias: i64,
+    offset: usize,
+    length: usize,
+}
+
+/// Write `rows` (JSON objects) to a QVD file. `columns` fixes the column order;
+/// if empty, columns are the union of row keys in first-seen order.
+pub fn write_file(path: &Path, columns: &[String], rows: &[Value]) -> Result<(), String> {
+    let cols: Vec<String> = if !columns.is_empty() {
+        columns.to_vec()
+    } else {
+        let mut seen = Vec::new();
+        let mut set = std::collections::HashSet::new();
+        for r in rows {
+            if let Some(o) = r.as_object() {
+                for k in o.keys() {
+                    if set.insert(k.clone()) {
+                        seen.push(k.clone());
+                    }
+                }
+            }
+        }
+        seen
+    };
+
+    let mut wcols: Vec<WCol> = cols
+        .iter()
+        .map(|c| WCol {
+            name: c.clone(),
+            symbols: Vec::new(),
+            index_of: HashMap::new(),
+            has_null: false,
+            bit_offset: 0,
+            bit_width: 0,
+            bias: 0,
+            offset: 0,
+            length: 0,
+        })
+        .collect();
+
+    // Build per-column symbol tables (distinct non-null values, first-seen order).
+    for r in rows {
+        let obj = r.as_object();
+        for wc in wcols.iter_mut() {
+            let v = obj.and_then(|o| o.get(&wc.name)).unwrap_or(&Value::Null);
+            match classify(v) {
+                None => wc.has_null = true,
+                Some(sym) => {
+                    let k = sym.key();
+                    if !wc.index_of.contains_key(&k) {
+                        wc.index_of.insert(k, wc.symbols.len());
+                        wc.symbols.push(sym);
+                    }
+                }
+            }
+        }
+    }
+
+    // Geometry: bias, bit widths, byte offsets. Nullable columns use Qlik's
+    // Bias=-2 (NULL row -> raw 0 -> index -2); real index k -> raw k+2.
+    let mut bit_offset = 0usize;
+    let mut sym_offset = 0usize;
+    for wc in wcols.iter_mut() {
+        wc.bias = if wc.has_null { -2 } else { 0 };
+        let nsym = wc.symbols.len() as u64;
+        let max_raw = if wc.has_null {
+            if nsym == 0 { 0 } else { nsym + 1 }
+        } else {
+            nsym.saturating_sub(1)
+        };
+        wc.bit_width = bits_needed(max_raw).max(1);
+        wc.bit_offset = bit_offset;
+        bit_offset += wc.bit_width;
+        wc.offset = sym_offset;
+        wc.length = wc.symbols.iter().map(Sym::byte_len).sum();
+        sym_offset += wc.length;
+    }
+    let rbs = (bit_offset + 7) / 8;
+    let nrec = rows.len();
+
+    let mut sym_bytes = Vec::with_capacity(sym_offset);
+    for wc in &wcols {
+        for s in &wc.symbols {
+            s.emit(&mut sym_bytes);
+        }
+    }
+
+    // Bit-pack the record index, little-endian within each record.
+    let mut rec_bytes = vec![0u8; nrec * rbs];
+    for (ri, r) in rows.iter().enumerate() {
+        let obj = r.as_object();
+        let base = ri * rbs;
+        for wc in &wcols {
+            let v = obj.and_then(|o| o.get(&wc.name)).unwrap_or(&Value::Null);
+            let raw: u64 = match classify(v) {
+                None => 0,
+                Some(sym) => {
+                    let idx = *wc.index_of.get(&sym.key()).unwrap_or(&0) as u64;
+                    if wc.bias == -2 { idx + 2 } else { idx }
+                }
+            };
+            for k in 0..wc.bit_width {
+                if (raw >> k) & 1 == 1 {
+                    let bit = wc.bit_offset + k;
+                    rec_bytes[base + bit / 8] |= 1 << (bit % 8);
+                }
+            }
+        }
+    }
+
+    let header = build_header(&wcols, nrec, rbs, sym_bytes.len(), rec_bytes.len());
+    let mut out = Vec::with_capacity(header.len() + 3 + sym_bytes.len() + rec_bytes.len());
+    out.extend_from_slice(header.as_bytes());
+    out.extend_from_slice(b"\r\n\0");
+    out.extend_from_slice(&sym_bytes);
+    out.extend_from_slice(&rec_bytes);
+
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create {}: {}", parent.display(), e))?;
+        }
+    }
+    std::fs::write(path, &out).map_err(|e| format!("write {}: {}", path.display(), e))
+}
+
+fn col_tags(wc: &WCol) -> &'static str {
+    // Always emit a <Tags> element, even when empty: Qlik QVDs always include
+    // one, and some readers (e.g. pyqvd) iterate <Tags> unconditionally and
+    // crash on its absence. Zero-symbol (all-null) and mixed-type columns get
+    // an empty <Tags></Tags>.
+    const EMPTY: &str = "      <Tags></Tags>\r\n";
+    if wc.symbols.is_empty() {
+        return EMPTY;
+    }
+    if wc.symbols.iter().all(|s| matches!(s, Sym::Int(_))) {
+        "      <Tags>\r\n        <String>$numeric</String>\r\n        <String>$integer</String>\r\n      </Tags>\r\n"
+    } else if wc.symbols.iter().all(|s| matches!(s, Sym::Int(_) | Sym::Double(_))) {
+        "      <Tags>\r\n        <String>$numeric</String>\r\n      </Tags>\r\n"
+    } else if wc.symbols.iter().all(|s| matches!(s, Sym::Str(_))) {
+        "      <Tags>\r\n        <String>$text</String>\r\n      </Tags>\r\n"
+    } else {
+        EMPTY
+    }
+}
+
+fn build_header(wcols: &[WCol], nrec: usize, rbs: usize, sym_len: usize, rec_len: usize) -> String {
+    let mut s = String::new();
+    s.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<QvdTableHeader>\r\n");
+    s.push_str("  <QvBuildNo>50668</QvBuildNo>\r\n");
+    s.push_str("  <CreatorDoc>duckle</CreatorDoc>\r\n");
+    s.push_str(&format!("  <CreateUtcTime>{}</CreateUtcTime>\r\n", utc_now_iso()));
+    s.push_str("  <SourceCreateUtcTime></SourceCreateUtcTime>\r\n");
+    s.push_str("  <SourceFileUtcTime></SourceFileUtcTime>\r\n");
+    s.push_str("  <StaleUtcTime></StaleUtcTime>\r\n");
+    s.push_str("  <TableName>Duckle</TableName>\r\n");
+    s.push_str("  <SourceFileSize>-1</SourceFileSize>\r\n");
+    s.push_str("  <Fields>\r\n");
+    for wc in wcols {
+        s.push_str("    <QvdFieldHeader>\r\n");
+        s.push_str(&format!("      <FieldName>{}</FieldName>\r\n", xml_escape(&wc.name)));
+        s.push_str(&format!("      <BitOffset>{}</BitOffset>\r\n", wc.bit_offset));
+        s.push_str(&format!("      <BitWidth>{}</BitWidth>\r\n", wc.bit_width));
+        s.push_str(&format!("      <Bias>{}</Bias>\r\n", wc.bias));
+        s.push_str("      <NumberFormat>\r\n        <Type>UNKNOWN</Type>\r\n        <nDec>0</nDec>\r\n        <UseThou>0</UseThou>\r\n        <Fmt></Fmt>\r\n        <Dec></Dec>\r\n        <Thou></Thou>\r\n      </NumberFormat>\r\n");
+        s.push_str(&format!("      <NoOfSymbols>{}</NoOfSymbols>\r\n", wc.symbols.len()));
+        s.push_str(&format!("      <Offset>{}</Offset>\r\n", wc.offset));
+        s.push_str(&format!("      <Length>{}</Length>\r\n", wc.length));
+        s.push_str("      <Comment></Comment>\r\n");
+        s.push_str(col_tags(wc));
+        s.push_str("    </QvdFieldHeader>\r\n");
+    }
+    s.push_str("  </Fields>\r\n");
+    s.push_str("  <Compression></Compression>\r\n");
+    s.push_str(&format!("  <RecordByteSize>{}</RecordByteSize>\r\n", rbs));
+    s.push_str(&format!("  <NoOfRecords>{}</NoOfRecords>\r\n", nrec));
+    s.push_str(&format!("  <Offset>{}</Offset>\r\n", sym_len));
+    s.push_str(&format!("  <Length>{}</Length>\r\n", rec_len));
+    s.push_str("  <Comment></Comment>\r\n");
+    s.push_str("  <Lineage></Lineage>\r\n");
+    s.push_str("</QvdTableHeader>");
+    s
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn utc_now_iso() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0) as i64;
+    let (y, m, d) = civil_from_days(secs.div_euclid(86400));
+    let rem = secs.rem_euclid(86400);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+        y,
+        m,
+        d,
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+/// Days-since-Unix-epoch -> (year, month, day), UTC. Howard Hinnant's algorithm.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 #[cfg(test)]
@@ -257,5 +575,42 @@ mod tests {
         assert_eq!(rows[0]["id"], Value::from(1));
         assert_eq!(rows[2]["amount"], json_num(30.25));
         assert_eq!(rows[3]["name"], Value::String("Dave".into()));
+    }
+
+    #[test]
+    fn writer_roundtrips_nulls_multibyte_and_mixed() {
+        use serde_json::json;
+        // 400 rows: forces RecordByteSize >= 2 (multi-byte records, exposes the
+        // little-endian bug). Includes nulls (Bias=-2), an empty string, unicode,
+        // a negative, and a mixed int/float column.
+        let mut rows = Vec::new();
+        for i in 0..400i64 {
+            rows.push(json!({
+                "id": i,
+                "name": if i % 7 == 0 { Value::Null } else { json!(format!("n{}", i % 50)) },
+                "amount": if i % 2 == 0 { json!(i as f64 / 4.0) } else { json!(i) },
+                "tag": if i == 0 { json!("") } else { json!("café") },
+            }));
+        }
+        let dir = std::env::temp_dir().join(format!("duckle_qvd_rt_{}", rows.len()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("rt.qvd");
+        let cols: Vec<String> = vec!["id", "name", "amount", "tag"].into_iter().map(String::from).collect();
+        write_file(&path, &cols, &rows).expect("write qvd");
+        let back = read_file(&path).expect("read qvd");
+        assert_eq!(back.len(), rows.len());
+        for (orig, got) in rows.iter().zip(back.iter()) {
+            // id: small int round-trips exactly.
+            assert_eq!(got["id"], orig["id"]);
+            // name: nulls preserved, strings preserved.
+            assert_eq!(got["name"], orig["name"]);
+            // tag: empty string + unicode preserved.
+            assert_eq!(got["tag"], orig["tag"]);
+            // amount: numeric value equal (int vs float typing may differ).
+            let a = orig["amount"].as_f64().unwrap();
+            let b = got["amount"].as_f64().unwrap();
+            assert!((a - b).abs() < 1e-9, "amount {} != {}", a, b);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

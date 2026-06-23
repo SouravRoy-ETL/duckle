@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "componentCount": 349,
+  "componentCount": 350,
   "components": [
     {
       "id": "src.csv",
@@ -25267,6 +25267,143 @@
                     "name": "Avro",
                     "extensions": [
                       "avro"
+                    ]
+                  },
+                  {
+                    "name": "All files",
+                    "extensions": [
+                      "*"
+                    ]
+                  }
+                ]
+              },
+              {
+                "key": "mode",
+                "label": "Write mode",
+                "kind": "select",
+                "defaultValue": "overwrite",
+                "options": [
+                  {
+                    "label": "Overwrite",
+                    "value": "overwrite"
+                  },
+                  {
+                    "label": "Error if exists",
+                    "value": "error"
+                  }
+                ]
+              },
+              {
+                "key": "encoding",
+                "label": "Encoding",
+                "kind": "select",
+                "defaultValue": "utf-8",
+                "options": [
+                  {
+                    "label": "UTF-8",
+                    "value": "utf-8"
+                  },
+                  {
+                    "label": "UTF-16",
+                    "value": "utf-16"
+                  },
+                  {
+                    "label": "Latin-1",
+                    "value": "latin-1"
+                  },
+                  {
+                    "label": "Windows-1252",
+                    "value": "windows-1252"
+                  }
+                ]
+              },
+              {
+                "key": "compression",
+                "label": "Compression",
+                "kind": "select",
+                "defaultValue": "none",
+                "options": [
+                  {
+                    "label": "None",
+                    "value": "none"
+                  },
+                  {
+                    "label": "Gzip",
+                    "value": "gzip"
+                  },
+                  {
+                    "label": "Zstd",
+                    "value": "zstd"
+                  },
+                  {
+                    "label": "Snappy",
+                    "value": "snappy"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "ports": {
+          "inputs": [
+            {
+              "id": "main",
+              "label": "main",
+              "type": "main"
+            },
+            {
+              "id": "reject",
+              "label": "reject",
+              "type": "reject",
+              "optional": true
+            }
+          ],
+          "outputs": []
+        }
+      }
+    },
+    {
+      "id": "snk.qvd",
+      "label": "Qlik QVD",
+      "kind": "sink",
+      "availability": "available",
+      "summary": "Write rows as a Qlik QVD file (.qvd) via a clean-room pure-Rust encoder (no Qlik runtime). Builds the per-column symbol tables + bit-stuffed index; values are typed per cell (int / double / string), nulls preserved. Round-trips with the QVD source and loads in QlikView / Qlik Sense.",
+      "ports": {
+        "inputs": [
+          {
+            "id": "main",
+            "label": "main",
+            "type": "main"
+          },
+          {
+            "id": "reject",
+            "label": "reject",
+            "type": "reject",
+            "optional": true
+          }
+        ],
+        "outputs": []
+      },
+      "manifest": {
+        "id": "snk.qvd",
+        "kind": "sink",
+        "label": "Qlik QVD",
+        "description": "Write rows as a Qlik QVD file (.qvd) via a clean-room pure-Rust encoder (no Qlik runtime). Builds the per-column symbol tables + bit-stuffed index; values are typed per cell (int / double / string), nulls preserved. Round-trips with the QVD source and loads in QlikView / Qlik Sense.",
+        "schemaSource": "upstream",
+        "sections": [
+          {
+            "label": "Destination file",
+            "fields": [
+              {
+                "key": "path",
+                "label": "Output path",
+                "kind": "save-path",
+                "required": true,
+                "filters": [
+                  {
+                    "name": "Qlik QVD",
+                    "extensions": [
+                      "qvd"
                     ]
                   },
                   {

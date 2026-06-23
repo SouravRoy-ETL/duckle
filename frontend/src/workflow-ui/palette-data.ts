@@ -473,6 +473,7 @@ export const PALETTE: Category[] = [
                     snk('excel', 'Excel (XLSX)', 'available', 'Write .xlsx via the DuckDB excel extension'),
                     snk('parquet', 'Parquet', 'available'),
                     snk('avro', 'Avro', 'available', 'Write rows as an Apache Avro container file via the pure-Rust `apache-avro` crate. Schema is inferred from the first row\'s column types (long / double / string / boolean) - or supply a JSON Avro schema via the schemaJson field to override. recordName names the inferred record (default `Row`).'),
+                    snk('qvd', 'Qlik QVD', 'available', 'Write rows as a Qlik QVD file (.qvd) via a clean-room pure-Rust encoder (no Qlik runtime). Builds the per-column symbol tables + bit-stuffed index; values are typed per cell (int / double / string), nulls preserved. Round-trips with the QVD source and loads in QlikView / Qlik Sense.'),
                     snk('orc', 'ORC', 'planned'),
                     snk('yaml', 'YAML', 'available', 'Write the upstream rows as a top-level YAML array (`- key: value` per row).'),
                     snk('toml', 'TOML', 'available', 'Write the upstream rows as TOML. TOML disallows a top-level array so the engine wraps under a `rows` key: `[[rows]]` per row.'),

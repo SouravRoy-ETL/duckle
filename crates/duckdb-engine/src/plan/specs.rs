@@ -473,6 +473,14 @@ pub struct AvroSinkSpec {
     pub record_name: String,
 }
 
+/// snk.qvd (#88): write upstream rows to a Qlik QVD file via the clean-room
+/// `crate::qvd` writer. Column order follows the first row; no schema config.
+#[derive(Debug, Clone)]
+pub struct QvdSinkSpec {
+    pub from_view: String,
+    pub path: String,
+}
+
 /// snk.rabbit: publish one AMQP message per upstream row to
 /// (exchange, routing_key) via the pure-Rust lapin driver. value =
 /// JSON-stringified row. Persistent delivery mode (= survives broker
