@@ -106,6 +106,18 @@ Use `cargo tauri dev` for desktop development. Do not use
 shell without Vite and can leave the window showing a localhost connection
 error.
 
+## Run Modes
+
+There are three intended local run modes:
+
+| Mode | Command shape | Use for |
+|---|---|---|
+| `ui-only` | `npm --prefix frontend run dev` | Fast browser UI work with no real runtime. |
+| `ui-http` | Vite plus local HTTP bridge | Browser UI with real headless execution. Planned. |
+| `tauri` | `cargo tauri dev` | Full desktop/Tauri validation. |
+
+See `docs/00_foundation/04_dev-run-modes.md` for the detailed local workflow and `docs/03_runtime/09_http-runtime-bridge.md` for the planned HTTP bridge architecture.
+
 ## First Launch Setup
 
 Inside the app:

@@ -102,7 +102,7 @@ Use `code.shell` for Dolt-native CLI steps:
 
 Then use `src.mysql` for actual table reads.
 
-Important caveat: this needs a tested Dolt SQL Server config before becoming a foundation workflow. Capture host, port, database, user, and startup assumptions in `07_dolt-bootstrap-and-sqlserver-patterns.md`.
+Important caveat: this needs a tested Dolt SQL Server config before becoming a foundation workflow. Capture host, port, database, user, and startup assumptions in `07_dolt-parquet-workflows.md` if this path becomes useful alongside the CLI-first Parquet pattern.
 
 ## SQL Server and Synapse Pattern
 

@@ -59,6 +59,7 @@ See also:
 
 - `docs/00_foundation/03_duckdb-cli-execution-model.md`
 - `docs/03_runtime/03_duckdb-cli-and-sql-batching.md`
+- `docs/03_runtime/09_http-runtime-bridge.md`
 
 ## Agent Rules
 
