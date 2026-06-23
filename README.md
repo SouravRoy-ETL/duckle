@@ -41,7 +41,7 @@
 **Get started**
 
 - [What is Duckle?](#what-is-duckle)
-- [What's new in v0.5.0](#whats-new-in-v050)
+- [What's new in v0.5.1](#whats-new-in-v051)
 - [Quickstart (60 s)](#quickstart-60-seconds)
 - [Download / Install](#download--install)
 - [Build from source](#build-from-source)
@@ -121,20 +121,20 @@ Three things make Duckle different from the heavyweights and the toy ETL tools:
 
 ---
 
-## What's new in v0.5.0
+## What's new in v0.5.1
 
-The biggest release since Duckle went cross-OS: a governance-grade studio with a data-quality / MDM pack, time-travel diffing, lineage, a web console, and bulk SQL Server writes. The component catalog now stands at 348.
+A self-hosted web editor, two new connectors, external AI endpoints, and a refreshed brand.
 
-- **Web Management Console (#75).** Run `duckle-runner serve` (or click the green "Open web dashboard" button) to operate every pipeline from a browser: a job-grouped overview with last status, schedule, duration, success-rate and per-job run history + logs, a runs timeline, and a built-in interval scheduler. No extra binary, no server, no auth.
-- **Time-travel + Data Diff.** Read any DuckLake table "AS OF" a snapshot or timestamp, browse snapshots, diff two snapshots (`src.ducklake.diff`) to see exactly what changed, and get a readable change summary (`xf.diffsummary`).
-- **Data Quality, Governance & MDM pack.** 17 new components: masking, survivorship, match groups, expectations, referential integrity, advanced profiling, record linkage, reconciliation, classification, data contracts, surrogate keys, labeled bucketize, SCD3, outlier detection, sessionization, and freshness checks. No external service or LLM.
-- **Bulk SQL Server writes (#86).** `snk.sqlserver` / `snk.synapse` now bulk-load through the DuckDB `mssql` community extension (TDS COPY) instead of row-by-row inserts. On by default; set `bulk: false` for the fully offline driver.
-- **Column-level lineage.** A whole-pipeline lineage resolver that stitches columns back to their root sources.
-- **Guided tour + redesigned console**, and a fix for the Windows startup console flash (Duckle no longer shells `git` at launch).
+- **Self-hosted web editor (#75).** Run the full Duckle editor in your browser, not just the management console: `docker compose -f docker-compose.web.yml up` (or `duckle serve`) serves the drag-and-drop canvas over HTTP. Build and run pipelines from the browser with live per-node progress over SSE, run-to-here (partial runs), and a server-side file browser to pick workspace files. Pipelines stay portable via `${workspace}`. Single-tenant, local-first, no auth - put it behind a trusted network.
+- **GizmoSQL connector.** `src.gizmosql` / `snk.gizmosql` talk to GizmoSQL over a clean-room Arrow Flight SQL client.
+- **Qlik QVD read + write (#88).** `src.qvd` reads Qlik QVD files and `snk.qvd` writes them - clean-room, no Qlik runtime required.
+- **External AI endpoints for Duckie (#92).** Point the Duckie assistant at any OpenAI-compatible endpoint; plus workspace reload-from-disk and MCP `create_pipeline` / `update_pipeline`.
+- **In-app review prompt.** A light, dismissible nudge to review Duckle once you have used it a while.
+- **New logo + brand.** A non-circular three-node pipeline mark and a refreshed "Duckle" wordmark across the app, web editor, icons, and README.
 
-Fixes: #7, #10, #39, #76, #82, #83, #84, and the #85 zh-CN update; set-operation `INTERSECT`/`EXCEPT`, secret redaction in logs, and 64-bit integer preservation in `code.javascript`.
+Fixes: #86 (SQL Server bulk batch + TLS), #87 (run-to-here), #89 (Duckie start + macOS ad-hoc signing of downloaded engine binaries), #91 (DuckDB upgrade banner), #93 (properties panel no longer blank-screens on malformed field values).
 
-Full notes: see the [v0.5.0 release](https://github.com/ducklelabs/duckle/releases/tag/v0.5.0).
+Full notes: see the [v0.5.1 release](https://github.com/ducklelabs/duckle/releases/tag/v0.5.1).
 
 ---
 
@@ -420,7 +420,7 @@ When the installer downloads the DuckDB CLI it also pre-fetches the extensions D
 
 ## Download / Install
 
-Pick the binary for your OS from the [latest release](https://github.com/ducklelabs/duckle/releases/tag/v0.5.0):
+Pick the binary for your OS from the [latest release](https://github.com/ducklelabs/duckle/releases/tag/v0.5.1):
 
 | OS | Asset | How to run |
 |---|---|---|
