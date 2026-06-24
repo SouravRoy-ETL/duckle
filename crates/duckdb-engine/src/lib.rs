@@ -1755,6 +1755,24 @@ impl DuckdbEngine {
         });
         (count, preview)
     }
+
+    /// Run a single read-only SELECT and return its schema + up to `row_limit`
+    /// rows in ONE DuckDB spawn. A lock-free read for dives: it does not take the
+    /// run_lock or create a temp db (so it can run alongside a pipeline run), and
+    /// it is not bound by PREVIEW_ROW_LIMIT. The SQL must be self-contained (read
+    /// its source inline, e.g. read_parquet('...')).
+    pub fn query(&self, sql: &str, row_limit: usize) -> Result<QueryResult, EngineError> {
+        let s = sql.trim().trim_end_matches(';').trim();
+        let combined = format!("DESCRIBE ({s}); SELECT * FROM ({s}) LIMIT {row_limit};");
+        let out = self.run(None, &combined, true)?;
+        let arrays = parse_json_arrays(&out);
+        let columns = arrays
+            .first()
+            .map(|rows| rows.iter().filter_map(parse_describe_row).collect())
+            .unwrap_or_default();
+        let rows = arrays.get(1).cloned().unwrap_or_default();
+        Ok(QueryResult { columns, rows })
+    }
 }
 
 /// Removes the temp run database (and its WAL) when dropped, plus any
@@ -3513,6 +3531,13 @@ pub struct NodeRunStatus {
 #[derive(Debug, Serialize)]
 pub struct NodePreview {
     pub node_id: String,
+    pub columns: Vec<Column>,
+    pub rows: Vec<JsonValue>,
+}
+
+/// Schema + rows from a single read-only query ([`Engine::query`]). The
+/// lock-free read path for dives: no run_lock, no temp db, caller-set row limit.
+pub struct QueryResult {
     pub columns: Vec<Column>,
     pub rows: Vec<JsonValue>,
 }

@@ -10750,3 +10750,20 @@ fn two_duck_sources_coexist_live() {
     assert_eq!(scalar_string(&format!("SELECT name FROM read_csv_auto('{}') WHERE id=2", out_a)), "y");
     assert_eq!(scalar_string(&format!("SELECT tag FROM read_csv_auto('{}') WHERE id=20", out_b)), "q");
 }
+
+#[test]
+fn engine_query_returns_columns_and_rows() {
+    // Engine::query: the lock-free dive read - one SELECT -> columns + rows.
+    let engine = engine_or_skip!();
+    let r = engine
+        .query(
+            "SELECT region, sum(revenue) AS revenue \
+             FROM (VALUES ('N', 100), ('S', 200), ('N', 50)) AS t(region, revenue) \
+             GROUP BY region ORDER BY revenue DESC",
+            100,
+        )
+        .expect("query ok");
+    assert_eq!(r.columns.len(), 2, "cols: {:?}", r.columns);
+    assert_eq!(r.columns[0].name, "region");
+    assert_eq!(r.rows.len(), 2, "rows: {:?}", r.rows);
+}
