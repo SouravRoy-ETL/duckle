@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import '@fontsource-variable/inter';
 import './i18n';            // bootstraps i18next; sets document.dir for RTL
 import App from './App';
+import { ShareView } from './ShareView';
 import { ThemeProvider } from './theme';
 import { isTauri } from './tauri-dialog';
 import './styles.css';
@@ -12,10 +13,18 @@ if (!rootEl) {
     throw new Error('Root element #root not found');
 }
 
+// Standalone read-only share routes: /dive/<id> and /dash/<id>. Anything else
+// is the full editor.
+const shareMatch = window.location.pathname.match(/^\/(dive|dash)\/(.+?)\/?$/);
+
 createRoot(rootEl).render(
     <StrictMode>
         <ThemeProvider>
-            <App />
+            {shareMatch ? (
+                <ShareView kind={shareMatch[1] as 'dive' | 'dash'} id={decodeURIComponent(shareMatch[2])} />
+            ) : (
+                <App />
+            )}
         </ThemeProvider>
     </StrictMode>,
 );

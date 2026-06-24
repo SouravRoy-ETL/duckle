@@ -7889,3 +7889,9 @@ html[dir='rtl'] .topbar-lang {
 .dash-cell { border: 1px solid var(--border); border-radius: 10px; overflow: auto; min-height: 280px; background: var(--bg-1); }
 .dash-picker { display: flex; flex-direction: column; gap: 4px; max-height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
 .dash-pick-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-1); cursor: pointer; }
+
+/* Standalone dive/dashboard share page (/dive/<id>, /dash/<id>) */
+.share-page { padding: 20px 28px; max-width: 1200px; margin: 0 auto; }
+.share-title { font-size: 20px; font-weight: 650; color: var(--text-1); margin: 4px 0 16px; }
+.share-msg { padding: 24px; color: var(--text-2); font-size: 14px; }
+.share-err { color: var(--danger, #f0556b); white-space: pre-wrap; font-family: Consolas, monospace; }
