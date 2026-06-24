@@ -64,6 +64,7 @@ const TYPE_LABEL: Record<RepoItemType, string> = {
     context: 'Context',
     routine: 'Routine',
     doc: 'Document',
+    dive: 'Dive',
 };
 
 function TypeIcon({ type, isOpen }: { type: RepoItemType; isOpen: boolean }) {

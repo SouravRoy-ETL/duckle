@@ -3,7 +3,7 @@
 // existing engine path (SSE progress / cancel / ${workspace} resolution come
 // for free, and it is dual-backend desktop + web). See docs/design/dives.md.
 
-import type { Edge, Node } from '@xyflow/react';
+import type { Node } from '@xyflow/react';
 import type { Column, DuckleNodeData } from '../pipeline-types';
 import { runPipeline } from '../tauri-bridge';
 import type { Dive, DiveParam } from './dive-types';

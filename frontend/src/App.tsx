@@ -107,6 +107,7 @@ import type { DuckleNodeData } from './pipeline-types';
 import type { DropPosition, NodeAction, PaneAction } from './canvas/Canvas';
 import { useUndoRedo, type CanvasSnapshot } from './useUndoRedo';
 import type { RepoItem } from './repo-types';
+import { DiveModal } from './dives/DiveModal';
 
 type RuntimeState = 'connecting' | 'ready' | 'offline';
 
@@ -1723,6 +1724,7 @@ export default function App() {
         | { kind: 'context'; itemId: string | null; parentId: string }
         | { kind: 'document'; itemId: string | null; parentId: string }
         | { kind: 'routine'; itemId: string | null; parentId: string }
+        | { kind: 'dive'; itemId: string | null; parentId: string }
         | null;
     const [repoEditor, setRepoEditor] = useState<EditorState>(null);
 
@@ -1767,6 +1769,12 @@ export default function App() {
                 kind: 'routine',
                 itemId: item.id,
                 parentId: item.parentId ?? 'routines',
+            });
+        else if (item.type === 'dive')
+            setRepoEditor({
+                kind: 'dive',
+                itemId: item.id,
+                parentId: item.parentId ?? 'dives',
             });
     }, []);
 
@@ -2236,6 +2244,14 @@ export default function App() {
                     item={editingRepoItem}
                     onSave={handleSaveRoutine}
                     onCancel={() => setRepoEditor(null)}
+                />
+            ) : null}
+            {repoEditor?.kind === 'dive' ? (
+                <DiveModal
+                    item={editingRepoItem}
+                    workspacePath={workspacePathState}
+                    theme={theme === 'light' ? 'light' : 'dark'}
+                    onClose={() => setRepoEditor(null)}
                 />
             ) : null}
 
