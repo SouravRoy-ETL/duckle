@@ -1504,6 +1504,25 @@
     }
 
     #[test]
+    fn json_ignore_errors_and_format() {
+        // #101: skip malformed records instead of aborting + wire the Format dropdown.
+        let sql = build_json_source(&serde_json::json!({
+            "path": "d.json", "format": "jsonl", "ignoreErrors": true
+        }));
+        assert!(sql.contains("ignore_errors=true"), "got: {}", sql);
+        assert!(sql.contains("format='newline_delimited'"), "got: {}", sql);
+        // The recordsPath branch carries the same args.
+        let nested = build_json_source(&serde_json::json!({
+            "path": "d.json", "recordsPath": "data", "ignoreErrors": true
+        }));
+        assert!(nested.contains("ignore_errors=true"), "got: {}", nested);
+        // Default off: neither appears, auto format omitted.
+        let plain = build_json_source(&serde_json::json!({ "path": "d.json" }));
+        assert!(!plain.contains("ignore_errors"), "got: {}", plain);
+        assert!(!plain.contains("format="), "got: {}", plain);
+    }
+
+    #[test]
     fn contract_builds_gated_passthrough() {
         let mut ni = NodeInputs::default();
         ni.ports.insert("main".into(), vec!["up".into()]);

@@ -550,6 +550,14 @@ export const MANIFESTS: Record<string, ComponentManifest> = {
                         description:
                             "Dotted key path to the array of records inside the JSON, for API-style responses where the rows live under a key (e.g. {\"data\":[...]} -> 'data', or {\"response\":{\"records\":[...]}} -> 'response.records'). Each record is unnested and nested fields are flattened into columns. Leave blank for a plain top-level array or JSON Lines.",
                     },
+                    {
+                        key: 'ignoreErrors',
+                        label: 'Skip malformed records',
+                        kind: 'bool',
+                        defaultValue: false,
+                        description:
+                            'Skip records DuckDB cannot parse instead of failing the whole load (#101). Best for large JSON Lines files where one bad line should not abort the run; the error message names the offending line and byte.',
+                    },
                 ],
             },
         ],

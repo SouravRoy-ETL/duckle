@@ -4249,8 +4249,36 @@ pub(crate) fn build_parquet_source(props: &JsonValue) -> String {
     format!("SELECT {} FROM read_parquet('{}')", select, sql_escape(&path))
 }
 
+/// Extra read_json args from user props: an explicit format (the UI's Format
+/// dropdown, which the reader previously ignored) and `ignore_errors` to skip
+/// malformed records instead of aborting the whole load (#101). DuckDB 1.5.4
+/// accepts ignore_errors for every JSON format.
+fn json_read_extra_args(props: &JsonValue) -> String {
+    let mut extra = String::new();
+    if let Some(fmt) = string_prop(props, "format") {
+        let mapped = match fmt.trim().to_ascii_lowercase().as_str() {
+            "array" => Some("array"),
+            "jsonl" | "ndjson" | "newline_delimited" => Some("newline_delimited"),
+            "object" | "unstructured" => Some("unstructured"),
+            _ => None, // "auto" / unknown -> leave to DuckDB's auto-detect
+        };
+        if let Some(m) = mapped {
+            extra.push_str(&format!(", format='{}'", m));
+        }
+    }
+    if props
+        .get("ignoreErrors")
+        .and_then(JsonValue::as_bool)
+        .unwrap_or(false)
+    {
+        extra.push_str(", ignore_errors=true");
+    }
+    extra
+}
+
 pub(crate) fn build_json_source(props: &JsonValue) -> String {
     let path = string_prop(props, "path").unwrap_or_default();
+    let extra = json_read_extra_args(props);
     // recordsPath: a dotted key path to the array of records inside the JSON
     // (e.g. a REST envelope like {"data":[...]} or {"response":{"records":[...]}}).
     // When set, walk to that array and unnest + recursively flatten each record
@@ -4269,14 +4297,16 @@ pub(crate) fn build_json_source(props: &JsonValue) -> String {
                 .collect::<Vec<_>>()
                 .join(".");
             format!(
-                "SELECT unnest({}, recursive := true) FROM read_json_auto('{}', maximum_object_size=104857600)",
+                "SELECT unnest({}, recursive := true) FROM read_json_auto('{}', maximum_object_size=104857600{})",
                 accessor,
-                sql_escape(&path)
+                sql_escape(&path),
+                extra
             )
         }
         None => format!(
-            "SELECT * FROM read_json_auto('{}', maximum_object_size=104857600)",
-            sql_escape(&path)
+            "SELECT * FROM read_json_auto('{}', maximum_object_size=104857600{})",
+            sql_escape(&path),
+            extra
         ),
     }
 }
