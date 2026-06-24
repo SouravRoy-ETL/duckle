@@ -311,45 +311,6 @@
   </div>
 </section>
 
-<!-- 6. WHAT'S NEW (v0.5.1) -->
-<section class="section" id="whats-new" style="background:var(--bg-soft); border-top:1px solid var(--border); border-bottom:1px solid var(--border);">
-  <div class="wrap">
-    <div class="center" style="margin-bottom:44px;"><span class="eyebrow">New in v0.5.1</span><h2>See more, trust more, share more</h2><p class="lead center">Dives turn a finished pipeline into shareable, live-querying views and dashboards. Deeper run visibility and safer sinks make every load easy to explain.</p></div>
-    <div class="grid cols-3">
-      <div class="card xf">
-        <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 4-6"/></svg></span>
-        <h3>Dives &amp; dashboards</h3>
-        <p>Local-first, live-querying data views and multi-chart dashboards. Ask a plain-language question and AI generates the chart. Export a self-contained HTML file, open a standalone share page, or browse them all from the top-bar Dives gallery.</p>
-      </div>
-      <div class="card">
-        <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h6m6 0h6M9 6l-6 6 6 6m6-12 6 6-6 6"/></svg></span>
-        <h3>Column lineage viewer</h3>
-        <p>For every node, see each output column traced back to the source column or columns it came from, so you can follow any value all the way upstream.</p>
-      </div>
-      <div class="card">
-        <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4m0 4h.01"/></svg></span>
-        <h3>Record-level error traceback</h3>
-        <p>Every failed stage reports the exact compiled SQL and the DuckDB message, in the Run view and the NDJSON log, so a broken run is never a black box.</p>
-      </div>
-      <div class="card snk">
-        <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v5H4zM4 15h16v5H4z"/><path d="M8 12h8"/></svg></span>
-        <h3>Dead-letter on DB sinks</h3>
-        <p>Database sinks validate before insert: rows that do not match the declared types go to a dead-letter file, and only clean rows are written to the table.</p>
-      </div>
-      <div class="card src">
-        <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg></span>
-        <h3>Tougher reads, rawer SQL</h3>
-        <p>Skip malformed records and pick a format on JSON, ignore errors and pad nulls on CSV, run verbatim SQL with leading WITH and multiple CTEs, and convert Excel serial dates with a column format of "excel".</p>
-      </div>
-      <div class="card">
-        <span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5z"/><path d="M9 12l2 2 4-4"/></svg></span>
-        <h3>Hardened web editor &amp; polish</h3>
-        <p>Cross-origin and DNS-rebind protection on the self-hosted web editor, plus a resizable properties panel, node-label tooltips and an always-reachable preview scrollbar.</p>
-      </div>
-    </div>
-  </div>
-</section>
-
 <!-- 7. THREE USE-CASE COLUMNS -->
 <section class="section" id="solutions">
   <div class="wrap">
@@ -453,7 +414,7 @@
         </a>
         <p class="muted" style="max-width:30ch;">The local-first data studio with a built-in AI assistant. Built on DuckDB.</p>
       </div>
-      <div><h4>Product</h4><a href="#product">Visual canvas</a><a href="#duckie">Duckie AI</a><a href="#whats-new">Dives &amp; dashboards</a><a href="docs/components.html">Components</a><a href="#download">Download</a></div>
+      <div><h4>Product</h4><a href="#product">Visual canvas</a><a href="#duckie">Duckie AI</a><a href="docs/components.html">Components</a><a href="#download">Download</a></div>
       <div><h4>Solutions</h4><a href="use-cases.html#join">Cross-system joins</a><a href="use-cases.html#snowflake">Warehouse savings</a><a href="use-cases.html#cdc">Change data capture</a><a href="use-cases.html#ai">Data prep for AI</a></div>
       <div><h4>Resources</h4><a href="docs/index.html">Documentation</a><a href="docs/learn.html">Learn hub</a><a href="use-cases.html">Use cases</a><a href="docs/integrations.html">Integrations</a></div>
       <div><h4>Project</h4><a href="https://github.com/ducklelabs/duckle" target="_blank" rel="noopener">GitHub</a><a href="https://github.com/ducklelabs/duckle/releases" target="_blank" rel="noopener">Releases</a><a href="https://github.com/ducklelabs/duckle/issues" target="_blank" rel="noopener">Issues</a><a href="https://duckdb.org" target="_blank" rel="noopener">DuckDB</a></div>
