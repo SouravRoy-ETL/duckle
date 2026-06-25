@@ -50,6 +50,13 @@ const EMBEDDED_RUNNER_LINUX: &[u8] = include_bytes!(env!("DUCKLE_EMBEDDED_RUNNER
 /// app-data path on demand so an MCP client config can point at it.
 const EMBEDDED_MCP: &[u8] = include_bytes!(env!("DUCKLE_EMBEDDED_MCP"));
 
+/// The LanceDB sidecar (duckle-lance), embedded at compile time when staged at
+/// apps/desktop/bin/. Empty when this build did not bundle it (see build.rs
+/// embed_lance). Staged to a temp stub + DUCKLE_LANCE_BIN at startup so
+/// src.lancedb / snk.lancedb work out of the box; absent -> the engine falls
+/// back to a duckle-lance on PATH.
+const EMBEDDED_LANCE: &[u8] = include_bytes!(env!("DUCKLE_EMBEDDED_LANCE"));
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -99,6 +106,16 @@ pub fn run() {
                 // (the dbt node's Install action -> dbt_install), and the engine
                 // errors clearly if xf.dbt runs before dbt is present.
                 dbt_engine::publish_if_present(&dir);
+            }
+            // Stage the bundled LanceDB sidecar (if this build carries one) and
+            // point the engine at it, so src.lancedb / snk.lancedb work without a
+            // separate install. Empty -> the engine falls back to a duckle-lance
+            // on PATH or DUCKLE_LANCE_BIN.
+            if !EMBEDDED_LANCE.is_empty() {
+                match staged_lance() {
+                    Ok(p) => std::env::set_var("DUCKLE_LANCE_BIN", p),
+                    Err(e) => tracing::warn!("duckle-lance staging failed: {e}"),
+                }
             }
             // Boot the scheduler. The `.setup` hook runs on the main
             // thread, OUTSIDE any tokio runtime, so calling spawn_ticker
@@ -793,6 +810,14 @@ pub fn self_update_run_selftest() -> ! {
 fn staged_stub() -> Result<PathBuf, String> {
     let suffix = if cfg!(windows) { ".exe" } else { "" };
     stage_stub_bytes(EMBEDDED_RUNNER, suffix, "")
+}
+
+/// Write the embedded LanceDB sidecar bytes to a temp stub + return its path, so
+/// the engine can shell out to it for src.lancedb / snk.lancedb. Caller checks
+/// EMBEDDED_LANCE is non-empty first.
+fn staged_lance() -> Result<PathBuf, String> {
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    stage_stub_bytes(EMBEDDED_LANCE, suffix, "lance-")
 }
 
 /// Write the embedded LINUX runner bytes to a temp stub file and return the

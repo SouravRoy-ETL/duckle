@@ -23,8 +23,41 @@ fn main() {
     embed_runner();
     embed_runner_linux();
     embed_mcp();
+    embed_lance();
 
     tauri_build::build()
+}
+
+/// Locate a prebuilt `duckle-lance` (the LanceDB sidecar) and expose its bytes
+/// via include_bytes!(env!("DUCKLE_EMBEDDED_LANCE")). OPTIONAL, and deliberately
+/// NOT built here: lancedb needs protoc + pulls DataFusion, so the desktop build
+/// must never compile it. CI builds it separately (with protoc) and stages it to
+/// apps/desktop/bin/. When absent we embed an empty file so the desktop still
+/// builds; src.lancedb / snk.lancedb then fall back to a duckle-lance on PATH or
+/// DUCKLE_LANCE_BIN at runtime.
+fn embed_lance() {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let name = if target_os == "windows" {
+        "duckle-lance.exe"
+    } else {
+        "duckle-lance"
+    };
+    let staged = std::path::Path::new(&manifest_dir).join("bin").join(name);
+    let dst = std::path::Path::new(&out_dir).join("embedded-lance.bin");
+    if staged.exists() {
+        std::fs::copy(&staged, &dst)
+            .unwrap_or_else(|e| panic!("copy {} -> {}: {}", staged.display(), dst.display(), e));
+    } else {
+        std::fs::write(&dst, [])
+            .unwrap_or_else(|e| panic!("write empty embedded-lance: {}", e));
+        println!(
+            "cargo:warning=duckle-lance not staged (apps/desktop/bin/{name}); LanceDB nodes will need a duckle-lance on PATH or DUCKLE_LANCE_BIN. CI stages it."
+        );
+    }
+    println!("cargo:rustc-env=DUCKLE_EMBEDDED_LANCE={}", dst.display());
+    println!("cargo:rerun-if-changed={}", staged.display());
 }
 
 /// Locate a freshly built `duckle-mcp` and expose its bytes to lib.rs via

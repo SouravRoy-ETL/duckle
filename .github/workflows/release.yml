@@ -157,6 +157,37 @@ jobs:
           name: duckle-runner-linux-x64
           path: apps/desktop/bin
 
+      # protoc is needed only by the LanceDB sidecar build below (lancedb ->
+      # lance pulls prost-build); the engine/desktop builds don't need it.
+      - name: Install protoc (for the LanceDB sidecar)
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build the LanceDB sidecar (duckle-lance) and stage it so build.rs embeds
+      # it into THIS desktop binary -> src.lancedb / snk.lancedb work out of the
+      # box. Kept out of the engine because lancedb pulls DataFusion + needs
+      # protoc. Best-effort: if a (cross-)target build fails, the bundle omits it
+      # and LanceDB nodes fall back to a duckle-lance on PATH / DUCKLE_LANCE_BIN.
+      - name: Build duckle-lance (LanceDB sidecar)
+        shell: bash
+        continue-on-error: true
+        run: |
+          set -e
+          if [ -n "${{ matrix.target }}" ]; then
+            cargo build --profile release-runner --target "${{ matrix.target }}" -p duckle-lance
+            base="target/${{ matrix.target }}/release-runner"
+          else
+            cargo build --profile release-runner -p duckle-lance
+            base="target/release-runner"
+          fi
+          mkdir -p apps/desktop/bin
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "$base/duckle-lance.exe" apps/desktop/bin/duckle-lance.exe
+          else
+            cp "$base/duckle-lance" apps/desktop/bin/duckle-lance
+          fi
+
       - name: Build raw Duckle binary
         shell: bash
         run: |
