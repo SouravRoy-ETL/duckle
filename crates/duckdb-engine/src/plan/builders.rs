@@ -1111,17 +1111,45 @@ pub(crate) fn build_string(inputs: &NodeInputs, props: &JsonValue, component_id:
             sql_escape(&replacement)
         ),
         "xf.regex.extract" => {
-            let group_idx = props
-                .get("groupIndex")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0)
-                .max(0);
-            format!(
-                "regexp_extract(CAST({} AS VARCHAR), '{}', {})",
-                col,
-                sql_escape(&pattern),
-                group_idx
-            )
+            // #109: when groupNames is set, use DuckDB's name_list form, which
+            // returns a STRUCT with one field per name (positional: the Nth name
+            // maps to the Nth capture group). Otherwise keep the integer-group
+            // scalar path, fully backward compatible.
+            let names_raw = string_prop(props, "groupNames").unwrap_or_default();
+            let names: Vec<String> = if names_raw.trim_start().starts_with('[') {
+                serde_json::from_str::<Vec<String>>(&names_raw).unwrap_or_default()
+            } else {
+                names_raw
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            };
+            if names.is_empty() {
+                let group_idx = props
+                    .get("groupIndex")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0)
+                    .max(0);
+                format!(
+                    "regexp_extract(CAST({} AS VARCHAR), '{}', {})",
+                    col,
+                    sql_escape(&pattern),
+                    group_idx
+                )
+            } else {
+                let name_list = names
+                    .iter()
+                    .map(|n| format!("'{}'", sql_escape(n)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "regexp_extract(CAST({} AS VARCHAR), '{}', [{}])",
+                    col,
+                    sql_escape(&pattern),
+                    name_list
+                )
+            }
         }
         "xf.regex.match" => format!(
             "regexp_matches(CAST({} AS VARCHAR), '{}')",

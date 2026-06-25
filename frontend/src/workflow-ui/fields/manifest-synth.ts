@@ -3175,6 +3175,13 @@ function synthStringTransform(comp: ComponentDef): ComponentManifest {
                         defaultValue: 0,
                         description: '0 = whole match, 1 = first capture group, 2 = second, ...',
                     },
+                    {
+                        key: 'groupNames',
+                        label: 'Group names (optional)',
+                        kind: 'text',
+                        placeholder: 'id, type',
+                        description: 'Comma-separated names for the capture groups. When set, the output is a STRUCT with these named fields (1st name = 1st group) and Group above is ignored.',
+                    },
                     { key: 'outputColumn', label: 'Output column', kind: 'text', placeholder: 'leave blank to overwrite' },
                 ],
             },

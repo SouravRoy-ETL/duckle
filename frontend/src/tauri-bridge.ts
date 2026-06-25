@@ -776,6 +776,26 @@ export async function settingsSetProxy(workspace: string, url: string | null): P
     await invoke('settings_set_proxy', { workspace, url });
 }
 
+// ---- Per-workspace memory cap (#102) -----------------------------------
+
+/** Read the workspace total DuckDB memory cap in MB (null = engine default). */
+export async function settingsGetMemoryLimit(workspace: string): Promise<number | null> {
+    if (!workspace) return null;
+    try {
+        return (await invoke<number | null>('settings_get_memory_limit', { workspace })) ?? null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Persist and immediately apply the workspace total memory cap (MB), used as
+ * DUCKLE_MEMORY_LIMIT for every run (batched and per-stage). Pass null to clear.
+ */
+export async function settingsSetMemoryLimit(workspace: string, mb: number | null): Promise<void> {
+    await invoke('settings_set_memory_limit', { workspace, mb });
+}
+
 // ---- External AI endpoint for the Duckie assistant (#92) ----------------
 
 export type AiConfig = { baseUrl: string | null; model: string | null; apiKey: string | null };

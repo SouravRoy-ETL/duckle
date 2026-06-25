@@ -94,6 +94,7 @@ pub fn run() -> Result<(), String> {
     std::env::set_var("DUCKLE_DUCKDB_BIN", &duckdb);
     std::env::set_var("DUCKLE_WORKSPACE", &workspace);
     std::env::set_var("DUCKLE_LOG_DIR", workspace.join("logs"));
+    apply_workspace_memory_limit(&workspace);
 
     let state = Arc::new(State { workspace: workspace.clone(), duckdb: duckdb.clone(), run_lock: Mutex::new(()) });
 
@@ -198,6 +199,7 @@ pub fn run_web() -> Result<(), String> {
     std::env::set_var("DUCKLE_DUCKDB_BIN", &duckdb);
     std::env::set_var("DUCKLE_WORKSPACE", &workspace);
     std::env::set_var("DUCKLE_LOG_DIR", workspace.join("logs"));
+    apply_workspace_memory_limit(&workspace);
     let state = Arc::new(WebState {
         workspace: workspace.clone(),
         duckdb: duckdb.clone(),
@@ -789,6 +791,52 @@ fn discover_pipelines(workspace: &Path) -> Vec<(PathBuf, String, Value)> {
     out
 }
 
+/// Map of repo item id -> human name from <workspace>/repository.json. Workspace
+/// pipeline files are saved as pipelines/<id>.json with no `name` field, so the
+/// dashboard must resolve the friendly name here instead of showing the internal
+/// id (#108). Best-effort: a missing / unreadable repository.json yields an empty
+/// map and callers fall back to the id.
+fn repo_names(workspace: &Path) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let text = match std::fs::read_to_string(workspace.join("repository.json")) {
+        Ok(t) => t,
+        Err(_) => return map,
+    };
+    let items: Vec<Value> = serde_json::from_str(&text).unwrap_or_default();
+    for it in items {
+        if let (Some(id), Some(name)) = (
+            it.get("id").and_then(|x| x.as_str()),
+            it.get("name").and_then(|x| x.as_str()),
+        ) {
+            if !name.trim().is_empty() {
+                map.insert(id.to_string(), name.to_string());
+            }
+        }
+    }
+    map
+}
+
+/// #102: apply the workspace's saved memory cap (.duckle/settings.json
+/// memory_limit_mb, set from the desktop Settings UI) as DUCKLE_MEMORY_LIMIT so
+/// web-editor runs honor the same per-workspace limit. An explicit
+/// DUCKLE_MEMORY_LIMIT already in the launch environment wins.
+fn apply_workspace_memory_limit(workspace: &Path) {
+    if std::env::var("DUCKLE_MEMORY_LIMIT").map(|v| !v.is_empty()).unwrap_or(false) {
+        return;
+    }
+    let text = match std::fs::read_to_string(workspace.join(".duckle").join("settings.json")) {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let v: Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    if let Some(mb) = v.get("memory_limit_mb").and_then(|x| x.as_u64()).filter(|m| *m > 0) {
+        std::env::set_var("DUCKLE_MEMORY_LIMIT", format!("{}MB", mb));
+    }
+}
+
 fn rel(workspace: &Path, path: &Path) -> String {
     path.strip_prefix(workspace)
         .unwrap_or(path)
@@ -803,15 +851,23 @@ fn last_run(workspace: &Path, id: &str) -> Option<RunRecord> {
 
 fn api_pipelines(state: &State) -> Value {
     let scheds = load_schedules(state);
+    let names = repo_names(&state.workspace);
     let items: Vec<Value> = discover_pipelines(&state.workspace)
         .into_iter()
         .map(|(path, id, v)| {
             let last = last_run(&state.workspace, &id);
             let sched = scheds.get(&id).cloned().unwrap_or(json!({ "enabled": false, "intervalMinutes": 0 }));
+            let name = names
+                .get(&id)
+                .cloned()
+                .or_else(|| {
+                    v.get("name").and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+                })
+                .unwrap_or_else(|| id.clone());
             json!({
                 "file": rel(&state.workspace, &path),
                 "id": id,
-                "name": v.get("name").and_then(|x| x.as_str()).unwrap_or(""),
+                "name": name,
                 "nodeCount": v.get("nodes").and_then(|n| n.as_array()).map(|a| a.len()).unwrap_or(0),
                 "edgeCount": v.get("edges").and_then(|e| e.as_array()).map(|a| a.len()).unwrap_or(0),
                 "lastStatus": last.as_ref().map(|r| r.status.clone()),
@@ -853,13 +909,20 @@ fn api_summary(state: &State) -> Value {
 /// each record tagged with its pipeline id/name.
 fn api_runs(state: &State, only: Option<&str>) -> Value {
     let mut rows: Vec<Value> = Vec::new();
+    let names = repo_names(&state.workspace);
     for (path, id, v) in discover_pipelines(&state.workspace) {
         if let Some(want) = only {
             if want != id {
                 continue;
             }
         }
-        let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let name = names
+            .get(&id)
+            .cloned()
+            .or_else(|| {
+                v.get("name").and_then(|x| x.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+            })
+            .unwrap_or_else(|| id.clone());
         for r in load_run_history(&state.workspace, &id) {
             rows.push(json!({
                 "id": id,

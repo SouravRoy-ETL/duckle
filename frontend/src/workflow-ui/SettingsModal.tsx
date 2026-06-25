@@ -1,7 +1,14 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { X, Loader2, Check } from 'lucide-react';
-import { settingsGetProxy, settingsSetProxy, settingsGetAi, settingsSetAi } from '../tauri-bridge';
+import {
+    settingsGetProxy,
+    settingsSetProxy,
+    settingsGetAi,
+    settingsSetAi,
+    settingsGetMemoryLimit,
+    settingsSetMemoryLimit,
+} from '../tauri-bridge';
 
 /**
  * App settings. Currently a single HTTP/HTTPS proxy field, persisted per
@@ -21,6 +28,8 @@ export function SettingsModal({
     const [aiBaseUrl, setAiBaseUrl] = useState('');
     const [aiModel, setAiModel] = useState('');
     const [aiKey, setAiKey] = useState('');
+    // #102: per-workspace total memory cap in MB (empty = engine default).
+    const [memLimit, setMemLimit] = useState('');
     const [loaded, setLoaded] = useState(false);
     const [saving, setSaving] = useState(false);
     const [saved, setSaved] = useState(false);
@@ -32,13 +41,14 @@ export function SettingsModal({
             setLoaded(true);
             return;
         }
-        Promise.all([settingsGetProxy(workspace), settingsGetAi(workspace)])
-            .then(([p, ai]) => {
+        Promise.all([settingsGetProxy(workspace), settingsGetAi(workspace), settingsGetMemoryLimit(workspace)])
+            .then(([p, ai, mem]) => {
                 if (!alive) return;
                 setProxy(p ?? '');
                 setAiBaseUrl(ai.baseUrl ?? '');
                 setAiModel(ai.model ?? '');
                 setAiKey(ai.apiKey ?? '');
+                setMemLimit(mem != null ? String(mem) : '');
                 setLoaded(true);
             })
             .catch(e => {
@@ -64,6 +74,8 @@ export function SettingsModal({
                 model: aiModel.trim() || null,
                 apiKey: aiKey.trim() || null,
             });
+            const mb = parseInt(memLimit.trim(), 10);
+            await settingsSetMemoryLimit(workspace, Number.isFinite(mb) && mb > 0 ? mb : null);
             setSaved(true);
             setTimeout(() => setSaved(false), 1500);
         } catch (e) {
@@ -160,6 +172,33 @@ export function SettingsModal({
                             {error}
                         </p>
                     ) : null}
+                    <div style={{ borderTop: '1px solid var(--border-2, #2a2a2a)', margin: '16px 0 12px' }} />
+                    <label htmlFor="settings-mem" style={{ display: 'block', fontWeight: 600, marginBottom: 6 }}>
+                        Memory limit (MB)
+                    </label>
+                    <p style={{ marginTop: 0, marginBottom: 8, fontSize: 12, opacity: 0.7 }}>
+                        Caps total RAM for every run in this workspace (sets DuckDB's memory_limit for
+                        both batched and per-stage execution). Leave empty for the engine default
+                        (about 80% of system RAM).
+                    </p>
+                    <input
+                        id="settings-mem"
+                        type="number"
+                        min={0}
+                        value={memLimit}
+                        onChange={e => setMemLimit(e.target.value)}
+                        placeholder="e.g. 4096"
+                        disabled={!loaded || !workspace}
+                        style={{
+                            width: '100%',
+                            padding: '8px 10px',
+                            borderRadius: 8,
+                            border: '1px solid var(--border-2, #2a2a2a)',
+                            background: 'var(--bg-1, #14161c)',
+                            color: 'inherit',
+                            boxSizing: 'border-box',
+                        }}
+                    />
                     <div style={{ borderTop: '1px solid var(--border-2, #2a2a2a)', margin: '16px 0 12px' }} />
                     <label style={{ display: 'block', fontWeight: 600, marginBottom: 6 }}>
                         AI assistant endpoint

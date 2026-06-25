@@ -171,6 +171,8 @@ pub fn run() {
             app_settings::settings_set_proxy,
             app_settings::settings_get_ai,
             app_settings::settings_set_ai,
+            app_settings::settings_get_memory_limit,
+            app_settings::settings_set_memory_limit,
             workspace_ci_status,
             check_for_update,
             build_pipeline_bundle,

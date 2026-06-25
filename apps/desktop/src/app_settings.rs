@@ -23,6 +23,10 @@ struct AppSettings {
     /// API key for the external endpoint (sent as `Authorization: Bearer ...`).
     /// Stored alongside the proxy creds in the workspace's local .duckle dir.
     ai_api_key: Option<String>,
+    /// #102: total DuckDB memory cap in MB, applied as DUCKLE_MEMORY_LIMIT for
+    /// every run in this workspace (batched and per-stage). None = DuckDB
+    /// default (~80% of RAM). Stages run sequentially, so this caps peak RAM.
+    memory_limit_mb: Option<u32>,
 }
 
 /// The external-AI config returned to the Settings UI. camelCase for JS.
@@ -59,12 +63,19 @@ pub fn apply_for_workspace(workspace: &str) {
     if workspace.is_empty() {
         return;
     }
-    let proxy = load(Path::new(workspace))
+    let s = load(Path::new(workspace));
+    let proxy = s
         .https_proxy
+        .clone()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     if proxy.is_some() {
         duckle_duckdb_engine::tls::set_proxy(proxy);
+    }
+    // #102: apply the per-workspace memory cap as DUCKLE_MEMORY_LIMIT (the env
+    // var the engine reads in both batched and per-stage modes).
+    if let Some(mb) = s.memory_limit_mb.filter(|m| *m > 0) {
+        std::env::set_var("DUCKLE_MEMORY_LIMIT", format!("{}MB", mb));
     }
 }
 
@@ -89,6 +100,31 @@ pub fn settings_set_proxy(workspace: String, url: Option<String>) -> Result<(), 
     store(Path::new(&workspace), &s)?;
     // Apply immediately so the current session uses it without a relaunch.
     duckle_duckdb_engine::tls::set_proxy(url);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn settings_get_memory_limit(workspace: String) -> Option<u32> {
+    if workspace.is_empty() {
+        return None;
+    }
+    load(Path::new(&workspace)).memory_limit_mb.filter(|m| *m > 0)
+}
+
+#[tauri::command]
+pub fn settings_set_memory_limit(workspace: String, mb: Option<u32>) -> Result<(), String> {
+    if workspace.is_empty() {
+        return Err("no workspace is open".into());
+    }
+    let mb = mb.filter(|m| *m > 0);
+    let mut s = load(Path::new(&workspace));
+    s.memory_limit_mb = mb;
+    store(Path::new(&workspace), &s)?;
+    // Apply immediately so the current session's runs use it without a relaunch.
+    match mb {
+        Some(m) => std::env::set_var("DUCKLE_MEMORY_LIMIT", format!("{}MB", m)),
+        None => std::env::remove_var("DUCKLE_MEMORY_LIMIT"),
+    }
     Ok(())
 }
 
