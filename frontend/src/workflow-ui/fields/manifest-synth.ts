@@ -1421,7 +1421,8 @@ function synthWarehouseSource(comp: ComponentDef): ComponentManifest {
             { label: 'Redshift connection', fields: dbConnectionFields(comp.id) },
             { label: 'Source table', fields: [
                 { key: 'schemaName', label: 'Schema', kind: 'text', defaultValue: 'public' },
-                { key: 'tableName', label: 'Table', kind: 'text', required: true, placeholder: 'orders' },
+                { key: 'tableName', label: 'Table (for SELECT *)', kind: 'text', placeholder: 'orders' },
+                { key: 'query', label: 'Or custom SQL', kind: 'expression', rows: 4, placeholder: 'SELECT * FROM public.orders WHERE ...' },
             ] },
         ]);
     }
@@ -1438,7 +1439,8 @@ function synthWarehouseSource(comp: ComponentDef): ComponentManifest {
                 label: 'Source table',
                 fields: [
                     { key: 'schemaName', label: 'Dataset', kind: 'text', placeholder: 'analytics' },
-                    { key: 'tableName', label: 'Table', kind: 'text', required: true, placeholder: 'events' },
+                    { key: 'tableName', label: 'Table (for SELECT *)', kind: 'text', placeholder: 'events' },
+                    { key: 'query', label: 'Or custom SQL', kind: 'expression', rows: 4, placeholder: 'SELECT * FROM analytics.events WHERE ...' },
                 ],
             },
             {

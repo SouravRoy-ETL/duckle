@@ -4667,7 +4667,12 @@ pub(crate) fn build_relational_source(component_id: &str, props: &JsonValue) -> 
     // Read mode dropdown at its default "Whole table" while typing into the SQL
     // box still runs the query instead of demanding a table name - the duck
     // sources (ducklake / motherduck / quack) now match src.duckdb (#77).
-    let sql = string_prop(props, "sql").filter(|s| !s.trim().is_empty());
+    // Accept either `sql` (duck/relational manifests) or `query` (the warehouse /
+    // network manifests use that key) so the custom-query pushdown is uniform
+    // across families without renaming keys in saved pipelines.
+    let sql = string_prop(props, "sql")
+        .or_else(|| string_prop(props, "query"))
+        .filter(|s| !s.trim().is_empty());
     if mode == "sql" || sql.is_some() {
         let sql = sql.ok_or_else(|| format!("{}: SQL query is empty", component_id))?;
         return Ok(format!("({})", sql));

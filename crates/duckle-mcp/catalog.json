@@ -4137,10 +4137,16 @@
               },
               {
                 "key": "tableName",
-                "label": "Table",
+                "label": "Table (for SELECT *)",
                 "kind": "text",
-                "required": true,
                 "placeholder": "events"
+              },
+              {
+                "key": "query",
+                "label": "Or custom SQL",
+                "kind": "expression",
+                "rows": 4,
+                "placeholder": "SELECT * FROM analytics.events WHERE ..."
               }
             ]
           },
@@ -4259,10 +4265,16 @@
               },
               {
                 "key": "tableName",
-                "label": "Table",
+                "label": "Table (for SELECT *)",
                 "kind": "text",
-                "required": true,
                 "placeholder": "orders"
+              },
+              {
+                "key": "query",
+                "label": "Or custom SQL",
+                "kind": "expression",
+                "rows": 4,
+                "placeholder": "SELECT * FROM public.orders WHERE ..."
               }
             ]
           }
