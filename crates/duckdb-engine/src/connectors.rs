@@ -6091,32 +6091,61 @@ impl DuckdbEngine {
             let collection = client
                 .database(&spec.database)
                 .collection::<mongodb::bson::Document>(&spec.collection);
-            let filter: mongodb::bson::Document = match &spec.filter {
-                Some(f) => {
-                    let v: serde_json::Value = serde_json::from_str(f)
-                        .map_err(|e| format!("bad filter JSON: {}", e))?;
-                    mongodb::bson::to_document(&v).map_err(|e| format!("filter to bson: {}", e))?
-                }
-                None => mongodb::bson::Document::new(),
-            };
-            let mut find = collection.find(filter);
-            if let Some(limit) = spec.limit {
-                find = find.limit(limit);
-            }
-            if let Some(p) = &spec.projection {
-                let pv: serde_json::Value = serde_json::from_str(p)
-                    .map_err(|e| format!("bad projection JSON: {}", e))?;
-                let pdoc = mongodb::bson::to_document(&pv)
-                    .map_err(|e| format!("projection to bson: {}", e))?;
-                find = find.projection(pdoc);
-            }
-            let mut cursor = find.await.map_err(|e| format!("find: {}", e))?;
             let mut out = Vec::new();
-            while cursor.advance().await.map_err(|e| format!("cursor: {}", e))? {
-                let d = cursor
-                    .deserialize_current()
-                    .map_err(|e| format!("deserialize: {}", e))?;
-                out.push(d);
+            if let Some(pl) = &spec.pipeline {
+                // #106: aggregation pipeline mode ($match / $lookup / $group ...).
+                let v: serde_json::Value = serde_json::from_str(pl)
+                    .map_err(|e| format!("bad pipeline JSON: {}", e))?;
+                let arr = v
+                    .as_array()
+                    .ok_or_else(|| "pipeline must be a JSON array of stages".to_string())?;
+                let stages = arr
+                    .iter()
+                    .map(|s| {
+                        mongodb::bson::to_document(s)
+                            .map_err(|e| format!("pipeline stage to bson: {}", e))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                let mut cursor = collection
+                    .aggregate(stages)
+                    .await
+                    .map_err(|e| format!("aggregate: {}", e))?;
+                while cursor.advance().await.map_err(|e| format!("cursor: {}", e))? {
+                    out.push(
+                        cursor
+                            .deserialize_current()
+                            .map_err(|e| format!("deserialize: {}", e))?,
+                    );
+                }
+            } else {
+                let filter: mongodb::bson::Document = match &spec.filter {
+                    Some(f) => {
+                        let v: serde_json::Value = serde_json::from_str(f)
+                            .map_err(|e| format!("bad filter JSON: {}", e))?;
+                        mongodb::bson::to_document(&v)
+                            .map_err(|e| format!("filter to bson: {}", e))?
+                    }
+                    None => mongodb::bson::Document::new(),
+                };
+                let mut find = collection.find(filter);
+                if let Some(limit) = spec.limit {
+                    find = find.limit(limit);
+                }
+                if let Some(p) = &spec.projection {
+                    let pv: serde_json::Value = serde_json::from_str(p)
+                        .map_err(|e| format!("bad projection JSON: {}", e))?;
+                    let pdoc = mongodb::bson::to_document(&pv)
+                        .map_err(|e| format!("projection to bson: {}", e))?;
+                    find = find.projection(pdoc);
+                }
+                let mut cursor = find.await.map_err(|e| format!("find: {}", e))?;
+                while cursor.advance().await.map_err(|e| format!("cursor: {}", e))? {
+                    out.push(
+                        cursor
+                            .deserialize_current()
+                            .map_err(|e| format!("deserialize: {}", e))?,
+                    );
+                }
             }
             Ok(out)
         });

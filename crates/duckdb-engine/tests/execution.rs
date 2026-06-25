@@ -3553,6 +3553,47 @@ fn snk_and_src_mongodb_roundtrip_via_real_uri() {
 }
 
 #[test]
+fn src_mongodb_aggregation_pipeline() {
+    // #106: an aggregation pipeline ($match) runs aggregate() instead of find().
+    // Env-gated on DUCKLE_MONGO_URI like the roundtrip test above.
+    let engine = engine_or_skip!();
+    let uri = match std::env::var("DUCKLE_MONGO_URI").ok() {
+        Some(u) if !u.is_empty() => u,
+        _ => {
+            eprintln!("skipping: set DUCKLE_MONGO_URI to run MongoDB tests");
+            return;
+        }
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let csv = write_file(tmp.path(), "in.csv", "id,name\n1,alice\n2,bob\n3,carol\n");
+    let coll = format!("duckle_agg_{}", std::process::id());
+    let r1 = engine.execute_pipeline(&doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node("m", "snk.mongodb", json!({
+                "uri": &uri, "database": "duckle_test", "collection": &coll, "mode": "replace"
+            })),
+        ]),
+        json!([main_edge("e", "s", "m")]),
+    ));
+    assert_eq!(r1.status, "ok", "mongo sink failed: {:?}", r1.error);
+    let out = out_path(tmp.path(), "out.csv");
+    let r2 = engine.execute_pipeline(&doc(
+        json!([
+            node("m", "src.mongodb", json!({
+                "uri": &uri, "database": "duckle_test", "collection": &coll,
+                "pipeline": "[{\"$match\": {\"id\": {\"$gte\": 2}}}]"
+            })),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true })),
+        ]),
+        json!([main_edge("e", "m", "k")]),
+    ));
+    assert_eq!(r2.status, "ok", "mongo aggregation failed: {:?}", r2.error);
+    let n = count(&format!("read_csv_auto('{}')", out));
+    assert_eq!(n, 2, "aggregation $match id>=2 should yield 2 docs, got {}", n);
+}
+
+#[test]
 fn src_elastic_paginates_via_search_after() {
     // Two pages, each size=2. Page 1's last hit has sort=[42, "a"];
     // engine should send that as search_after on the next request.

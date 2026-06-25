@@ -2232,6 +2232,14 @@ function synthNoSqlSource(comp: ComponentDef): ComponentManifest {
                         placeholder: '{"name": 1, "_id": 0}',
                     },
                     { key: 'limit', label: 'Limit (optional)', kind: 'integer' },
+                    {
+                        key: 'pipeline',
+                        label: 'Aggregation pipeline (JSON)',
+                        kind: 'expression',
+                        rows: 8,
+                        placeholder: '[{"$match": {"status": "active"}}, {"$lookup": {...}}, {"$group": {...}}]',
+                        description: 'A MongoDB aggregation pipeline as a JSON array of stages. When set, it runs aggregate() (enabling $lookup cross-collection joins, $group, $project, ...) and the Filter / Projection / Limit above are ignored.',
+                    },
                 ],
             },
         ]);

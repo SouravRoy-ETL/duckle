@@ -1052,6 +1052,11 @@ pub struct MongoSourceSpec {
     pub projection: Option<String>,
     /// Hard cap on the cursor result count. None = unbounded.
     pub limit: Option<i64>,
+    /// Optional aggregation pipeline as a JSON array of stages, e.g.
+    /// [{"$match":...},{"$lookup":...},{"$group":...}] (#106). When set, the
+    /// source runs aggregate() instead of find(); filter/projection/limit are
+    /// ignored. Enables $lookup cross-collection joins and server-side grouping.
+    pub pipeline: Option<String>,
 }
 
 /// Elasticsearch / OpenSearch pagination strategy.

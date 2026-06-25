@@ -2703,6 +2703,7 @@ fn build_stage(
             filter: string_prop(&props, "filter").filter(|s| !s.trim().is_empty()),
             projection: string_prop(&props, "projection").filter(|s| !s.trim().is_empty()),
             limit: props.get("limit").and_then(|v| v.as_i64()).filter(|n| *n > 0),
+            pipeline: string_prop(&props, "pipeline").filter(|s| !s.trim().is_empty()),
         });
         (String::new(), StageKind::View, None)
     } else if matches!(component_id, "src.graphql" | "src.linear" | "src.monday") {
