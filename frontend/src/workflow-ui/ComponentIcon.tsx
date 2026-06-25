@@ -83,6 +83,21 @@ type Props = { componentId: string; kind: NodeKind; size?: number; className?: s
  */
 export default function ComponentIcon({ componentId, kind, size = 14, className }: Props) {
     const brand = brandIconFor(componentId);
+    if (brand && 'png' in brand) {
+        // Raster brand favicon (e.g. LanceDB's, whose logo isn't in the SVG icon
+        // sets), rendered as a self-contained image (data URI = no XSS surface).
+        return (
+            <img
+                src={`data:image/png;base64,${brand.png}`}
+                alt={brand.title}
+                width={size}
+                height={size}
+                className={className}
+                style={{ objectFit: 'contain' }}
+                draggable={false}
+            />
+        );
+    }
     if (brand && 'svg' in brand) {
         // Full-colour gilbarbara logo, rendered as a self-contained image so its
         // own fills/gradients show through (data URI = no XSS surface).
