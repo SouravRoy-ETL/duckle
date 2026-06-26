@@ -190,6 +190,7 @@ mod tests {
                 label: "CSV".into(),
                 subtitle: Some("orders.csv".into()),
                 component_id: Some("src.csv".into()),
+                alias: None,
                 properties: None,
                 schema: Some(vec![Column {
                     name: "order_id".into(),
