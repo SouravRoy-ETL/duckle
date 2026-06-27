@@ -354,6 +354,30 @@ fn compile_impl(pipeline: &PipelineDoc, allow_view_upgrade: bool) -> Result<Comp
             reject_wired.insert(edge.source.as_str());
         }
     }
+    // A sink in upsert mode re-evaluates its main upstream TWICE: the
+    // DELETE ... WHERE (keys) IN (SELECT keys FROM up) and the INSERT ... SELECT
+    // FROM up both reference it (build_db_sink / build_relational_sink). Count
+    // its input as two consumers so an expensive single-consumer upstream
+    // materializes ONCE as a TABLE instead of being re-planned per statement.
+    // (merge mode references the source only once via MERGE INTO, so it is
+    // intentionally excluded.)
+    let upsert_sink_targets: std::collections::HashSet<&str> = node_index
+        .iter()
+        .filter_map(|(id, node)| {
+            let is_upsert = node
+                .data
+                .properties
+                .as_ref()
+                .and_then(|p| string_prop(p, "mode"))
+                .map(|m| m.eq_ignore_ascii_case("upsert"))
+                .unwrap_or(false);
+            if is_upsert {
+                Some(*id)
+            } else {
+                None
+            }
+        })
+        .collect();
     let mut consumer_count: HashMap<String, usize> = HashMap::new();
     // Source nodes whose rows a reject-wired filter reads twice (pass + reject
     // arm). Such a source must stay materialized once (#76): it is NOT eligible
@@ -388,7 +412,8 @@ fn compile_impl(pipeline: &PipelineDoc, allow_view_upgrade: bool) -> Result<Comp
             .map(|cid| ATTACH_PARQUET_SOURCES.contains(&cid))
             .unwrap_or(false);
         let weight = if port_key == "main"
-            && reject_wired.contains(edge.target.as_str())
+            && (reject_wired.contains(edge.target.as_str())
+                || upsert_sink_targets.contains(edge.target.as_str()))
             && !upstream_is_attach_parquet
         {
             2
@@ -2236,7 +2261,11 @@ fn build_stage(
         // stdout/stderr/exit_code/duration_ms so downstream stages can
         // branch on success / parse output. Shell defaults to the
         // platform interpreter; pass `shell` to override.
-        let command = string_prop(&props, "command")
+        // The GUI authors every code.* node's source under `code` (shared
+        // code-node form), so read that first and keep `command` as a
+        // back-compat alias for hand-authored / MCP pipelines.
+        let command = string_prop(&props, "code")
+            .or_else(|| string_prop(&props, "command"))
             .filter(|s| !s.is_empty())
             .ok_or_else(|| EngineError::Config(format!("{}: command required", component_id)))?;
         shell = Some(ShellSpec {
@@ -3143,12 +3172,16 @@ fn build_stage(
         // Per-row JS transform. Script must define a `transform`
         // function (named or assigned) that takes a row object and
         // returns one. No persistent state across rows.
+        // The scripts-group GUI form stores the body under `code` (and the
+        // routine picker inlines into `code`); accept `script` too for
+        // back-compat / hand-authored pipelines, matching code.python.
         let from_view = inputs
             .main()
             .ok_or_else(|| EngineError::Config(format!("{}: upstream input required", component_id)))?;
-        let script = string_prop(&props, "script")
+        let script = string_prop(&props, "code")
+            .or_else(|| string_prop(&props, "script"))
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| EngineError::Config(format!("{}: script required", component_id)))?;
+            .ok_or_else(|| EngineError::Config(format!("{}: code required", component_id)))?;
         javascript = Some(JavaScriptSpec {
             node_id: node.id.clone(),
             from_view: from_view.to_string(),

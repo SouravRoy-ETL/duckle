@@ -1001,6 +1001,17 @@ impl DuckdbEngine {
                     d.trim_start_matches('0').trim_end_matches('0').len()
                 }
                 if let Ok(Some(s)) = row.get::<usize, Option<String>>(i) {
+                    // An unconstrained NUMBER (and COUNT/SUM expressions) is
+                    // reported as Number(0, -127), so integer values reach this
+                    // arm rather than the scale==0 fast-path. Emit those as JSON
+                    // integers; otherwise 42 becomes the float 42.0 (typing the
+                    // column DOUBLE), or VARCHAR when mixed with >15-digit values.
+                    let t = s.trim();
+                    if !t.contains(&['.', 'e', 'E'][..]) {
+                        if let Ok(n) = t.parse::<i64>() {
+                            return JsonValue::from(n);
+                        }
+                    }
                     if significant_digits(&s) <= 15 {
                         if let Ok(n) = s.parse::<f64>() {
                             if let Some(num) = serde_json::Number::from_f64(n) {
@@ -1091,7 +1102,18 @@ impl DuckdbEngine {
             if !parent.as_os_str().is_empty() {
                 let cur = std::env::var("PATH").unwrap_or_default();
                 let sep = if cfg!(windows) { ';' } else { ':' };
-                std::env::set_var("PATH", format!("{}{}{}", parent.display(), sep, cur));
+                // Only prepend the driver dir if it isn't already on PATH:
+                // re-prepending on every run (e.g. under a long-lived `duckle
+                // serve`) grows PATH unboundedly toward the OS env-block limit.
+                let already = cur
+                    .split(sep)
+                    .any(|p| !p.is_empty() && Path::new(p) == parent);
+                if !already {
+                    std::env::set_var(
+                        "PATH",
+                        format!("{}{}{}", parent.display(), sep, cur),
+                    );
+                }
             }
         }
 
@@ -1586,8 +1608,14 @@ impl DuckdbEngine {
             .enable_all()
             .build()
             .map_err(|e| EngineError::Query(format!("cassandra: tokio rt: {}", e)))?;
-        let rows: Vec<JsonValue> = rt
-            .block_on(async {
+        // Stream rows straight to the NDJSON writer instead of collecting the
+        // whole result set into a Vec<JsonValue> on top of the driver's own row
+        // buffer, then walking it again (mirrors the SQL Server source).
+        let writer = JsonLinesWriter::open(&spec.node_id)?;
+        let bin = self.binary();
+        let count: usize = rt
+            .block_on(async move {
+                let mut writer = writer;
                 let mut builder = scylla::SessionBuilder::new();
                 for cp in spec.contact_points.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
                     builder = builder.known_node(cp);
@@ -1612,7 +1640,7 @@ impl DuckdbEngine {
                     .map(|c| c.name.clone())
                     .collect();
                 let rows = result.rows.unwrap_or_default();
-                let mut out = Vec::with_capacity(rows.len());
+                let mut count = 0usize;
                 for row in rows {
                     let mut obj = serde_json::Map::new();
                     for (i, name) in cols.iter().enumerate() {
@@ -1624,13 +1652,17 @@ impl DuckdbEngine {
                             .unwrap_or(JsonValue::Null);
                         obj.insert(name.clone(), v);
                     }
-                    out.push(JsonValue::Object(obj));
+                    writer
+                        .write_row(&JsonValue::Object(obj))
+                        .map_err(|e| format!("write row: {}", e))?;
+                    count += 1;
                 }
-                Ok::<Vec<JsonValue>, String>(out)
+                writer
+                    .finalize_into_table(bin, db, &spec.node_id)
+                    .map_err(|e| format!("finalize: {}", e))?;
+                Ok::<usize, String>(count)
             })
             .map_err(|e| EngineError::Query(format!("cassandra source: {}", e)))?;
-        let count = rows.len();
-        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &rows)?;
         Ok(format!(
             "cassandra: materialized {} rows into {}",
             count, spec.node_id
@@ -1719,9 +1751,15 @@ impl DuckdbEngine {
         let mut conn = client
             .get_connection()
             .map_err(|e| EngineError::Query(format!("redis: connect: {}", e)))?;
+        // SCAN can return the same key on more than one page (documented
+        // behavior, especially while the keyspace is rehashed under
+        // concurrent writes), so de-duplicate as we walk and count the
+        // limit against UNIQUE keys - otherwise duplicates both produce
+        // duplicate output rows and prematurely trip the cap.
         let mut keys: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut cursor: u64 = 0;
-        loop {
+        'scan: loop {
             self.check_cancelled()?;
             let (next, batch): (u64, Vec<String>) = redis::cmd("SCAN")
                 .arg(cursor)
@@ -1731,10 +1769,13 @@ impl DuckdbEngine {
                 .arg(500_u32)
                 .query(&mut conn)
                 .map_err(|e| EngineError::Query(format!("redis: SCAN: {}", e)))?;
-            keys.extend(batch);
-            if keys.len() as u64 >= spec.limit {
-                keys.truncate(spec.limit as usize);
-                break;
+            for k in batch {
+                if seen.insert(k.clone()) {
+                    keys.push(k);
+                    if keys.len() as u64 >= spec.limit {
+                        break 'scan;
+                    }
+                }
             }
             if next == 0 {
                 break;
@@ -1744,19 +1785,46 @@ impl DuckdbEngine {
         let mut rows: Vec<JsonValue> = Vec::with_capacity(keys.len());
         for chunk in keys.chunks(500) {
             self.check_cancelled()?;
-            let mut pipe = redis::pipe();
+            // Check each key's TYPE first (TYPE never returns WRONGTYPE),
+            // then GET only the plain-string keys. A non-string key
+            // (hash/list/set/zset/stream) under the matched pattern must
+            // not abort the whole pipelined batch - it yields a NULL value.
+            let mut type_pipe = redis::pipe();
             for k in chunk {
-                pipe.cmd("GET").arg(k);
+                type_pipe.cmd("TYPE").arg(k);
             }
-            let values: Vec<Option<String>> = redis::Pipeline::query(&pipe, &mut conn)
-                .map_err(|e| EngineError::Query(format!("redis: GET batch: {}", e)))?;
-            for (k, v) in chunk.iter().zip(values) {
+            let types: Vec<String> = redis::Pipeline::query(&type_pipe, &mut conn)
+                .map_err(|e| EngineError::Query(format!("redis: TYPE batch: {}", e)))?;
+            let string_keys: Vec<&String> = chunk
+                .iter()
+                .zip(types.iter())
+                .filter(|(_, t)| t.as_str() == "string")
+                .map(|(k, _)| k)
+                .collect();
+            let values: Vec<Option<String>> = if string_keys.is_empty() {
+                Vec::new()
+            } else {
+                let mut get_pipe = redis::pipe();
+                for k in &string_keys {
+                    get_pipe.cmd("GET").arg(*k);
+                }
+                redis::Pipeline::query(&get_pipe, &mut conn)
+                    .map_err(|e| EngineError::Query(format!("redis: GET batch: {}", e)))?
+            };
+            let mut got_values = values.into_iter();
+            for (k, t) in chunk.iter().zip(types.iter()) {
+                let value = if t.as_str() == "string" {
+                    got_values
+                        .next()
+                        .flatten()
+                        .map(JsonValue::String)
+                        .unwrap_or(JsonValue::Null)
+                } else {
+                    JsonValue::Null
+                };
                 let mut obj = serde_json::Map::new();
                 obj.insert("key".into(), JsonValue::String(k.clone()));
-                obj.insert(
-                    "value".into(),
-                    v.map(JsonValue::String).unwrap_or(JsonValue::Null),
-                );
+                obj.insert("value".into(), value);
                 rows.push(JsonValue::Object(obj));
             }
         }
@@ -2111,7 +2179,10 @@ impl DuckdbEngine {
     ) -> Result<String, EngineError> {
         let select = format!("SELECT * FROM {}", plan::quote_ident(&spec.from_view));
         let rows = self.run_rows(Some(db), &select)?;
-        let payload = JsonValue::Array(rows.clone());
+        let count = rows.len();
+        // Move the rows into the JSON array rather than cloning the whole
+        // dataset just to read its length back afterwards.
+        let payload = JsonValue::Array(rows);
         let text = match spec.format {
             FormatKind::Yaml => serde_yaml::to_string(&payload).map_err(|e| {
                 EngineError::Query(format!("yaml serialize: {}", e))
@@ -2132,7 +2203,7 @@ impl DuckdbEngine {
         Ok(format!(
             "{:?}: wrote {} rows to {}",
             spec.format,
-            rows.len(),
+            count,
             spec.path
         ))
     }
@@ -2388,8 +2459,11 @@ impl DuckdbEngine {
             plan::quote_ident(&spec.node_id),
             ppath
         );
-        self.run(Some(db), &create, false)?;
+        let create_result = self.run(Some(db), &create, false);
+        // Remove the temp Parquet whether or not the load succeeded - a failed
+        // CREATE (e.g. the working DB busy/locked) would otherwise leak it.
         let _ = std::fs::remove_file(&parquet_path);
+        create_result?;
         Ok(format!(
             "gizmosql: materialized {} records into {}",
             count, spec.node_id
@@ -2458,8 +2532,11 @@ impl DuckdbEngine {
             plan::quote_ident(&spec.node_id),
             ppath
         );
-        self.run(Some(db), &create, false)?;
+        let create_result = self.run(Some(db), &create, false);
+        // Remove the temp Parquet whether or not the load succeeded - a failed
+        // CREATE (e.g. the working DB busy/locked) would otherwise leak it.
         let _ = std::fs::remove_file(&parquet_path);
+        create_result?;
         Ok(format!("lancedb: materialized {} into {}", spec.table, spec.node_id))
     }
 
@@ -2578,8 +2655,11 @@ impl DuckdbEngine {
             plan::quote_ident(&spec.node_id),
             ppath
         );
-        self.run(Some(db), &create, false)?;
+        let create_result = self.run(Some(db), &create, false);
+        // Remove the temp Parquet whether or not the load succeeded - a failed
+        // CREATE (e.g. the working DB busy/locked) would otherwise leak it.
         let _ = std::fs::remove_file(&parquet_path);
+        create_result?;
         Ok(format!("vortex: materialized {} into {}", spec.path, spec.node_id))
     }
 
@@ -3158,8 +3238,29 @@ impl DuckdbEngine {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         };
-        let stdout_bytes = stdout_reader.join().unwrap_or_default();
-        let stderr_bytes = stderr_reader.join().unwrap_or_default();
+        // Collect stdout/stderr, but DON'T block forever: a grandchild that
+        // inherited the pipe write ends can keep them open after the shell
+        // exits, so read_to_end never sees EOF. Bound the wait by the same
+        // deadline (and honor cancellation) and give up on late output rather
+        // than hanging the whole run past the configured timeout.
+        let join_bounded = |handle: std::thread::JoinHandle<Vec<u8>>| -> Vec<u8> {
+            loop {
+                if handle.is_finished() {
+                    return handle.join().unwrap_or_default();
+                }
+                if self.cancel.load(Ordering::Relaxed) {
+                    return Vec::new();
+                }
+                if let Some(d) = deadline {
+                    if std::time::Instant::now() >= d {
+                        return Vec::new();
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        };
+        let stdout_bytes = join_bounded(stdout_reader);
+        let stderr_bytes = join_bounded(stderr_reader);
         let duration_ms = started.elapsed().as_millis() as i64;
         let exit_code = status.code().unwrap_or(-1);
         let mut row = serde_json::Map::new();
@@ -3436,9 +3537,15 @@ impl DuckdbEngine {
                         plan::quote_ident(model)
                     )
                 } else {
+                    // dbt builds the model into schema `spec.schema` in the run
+                    // db, so qualify the read-back. An unqualified name only
+                    // resolves against the default search path, so a non-default
+                    // schema (e.g. "analytics") would fail "model not found"
+                    // even though dbt succeeded.
                     format!(
-                        "CREATE OR REPLACE TABLE {} AS SELECT * FROM {};",
+                        "CREATE OR REPLACE TABLE {} AS SELECT * FROM {}.{};",
                         plan::quote_ident(&spec.node_id),
+                        plan::quote_ident(&spec.schema),
                         plan::quote_ident(model)
                     )
                 };
@@ -3544,12 +3651,11 @@ impl DuckdbEngine {
                 .map(|t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string());
             let bytes = match ftp.retr_as_buffer(name) {
                 Ok(cur) => cur.into_inner(),
-                Err(e) => {
-                    return Err(EngineError::Query(format!(
-                        "ftp retr {}: {}",
-                        name, e
-                    )))
-                }
+                // A listing entry that can't be retrieved (a subdirectory - NLST
+                // returns directory names with no type info - or a transiently
+                // locked/denied file) must not abort the whole harvest; skip it,
+                // mirroring the tolerant .ok() handling of size/mdtm above.
+                Err(_) => continue,
             };
             let mut row = serde_json::Map::new();
             row.insert("filename".into(), JsonValue::String(name.clone()));
@@ -3803,9 +3909,11 @@ impl DuckdbEngine {
 
         let temp = self.ftp_copy_view_to_temp(db, &spec.from_view, &spec.format)?;
         let upload = (|| -> Result<u64, EngineError> {
-            let bytes = std::fs::read(&temp)
-                .map_err(|e| EngineError::Query(format!("ftp: read temp {}: {}", temp.display(), e)))?;
-            let total = bytes.len() as u64;
+            // Stream the temp export straight from disk instead of slurping the
+            // whole (potentially multi-GB) file into a Vec<u8> first.
+            let total = std::fs::metadata(&temp)
+                .map_err(|e| EngineError::Query(format!("ftp: stat temp {}: {}", temp.display(), e)))?
+                .len();
             let mut ftp = FtpStream::connect(&addr)
                 .map_err(|e| EngineError::Query(format!("ftp connect {}: {}", addr, e)))?;
             if spec.secure {
@@ -3815,7 +3923,11 @@ impl DuckdbEngine {
             }
             ftp.login(&spec.user, &spec.password)
                 .map_err(|e| EngineError::Query(format!("ftp login: {}", e)))?;
-            let mut reader = std::io::Cursor::new(bytes);
+            let mut reader = std::io::BufReader::new(
+                std::fs::File::open(&temp).map_err(|e| {
+                    EngineError::Query(format!("ftp: open temp {}: {}", temp.display(), e))
+                })?,
+            );
             ftp.put_file(&spec.remote_path, &mut reader)
                 .map_err(|e| EngineError::Query(format!("ftp put {}: {}", spec.remote_path, e)))?;
             let _ = ftp.quit();
@@ -3863,10 +3975,13 @@ impl DuckdbEngine {
 
         let temp = self.ftp_copy_view_to_temp(db, &spec.from_view, &spec.format)?;
         let result: Result<u64, EngineError> = (|| {
-            let bytes = std::fs::read(&temp).map_err(|e| {
-                EngineError::Query(format!("sftp: read temp {}: {}", temp.display(), e))
-            })?;
-            let total = bytes.len() as u64;
+            // Stream the temp export from disk rather than loading the whole
+            // (potentially multi-GB) file into a Vec<u8>.
+            let total = std::fs::metadata(&temp)
+                .map_err(|e| {
+                    EngineError::Query(format!("sftp: stat temp {}: {}", temp.display(), e))
+                })?
+                .len();
 
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -3930,8 +4045,10 @@ impl DuckdbEngine {
                     .create(spec.remote_path.clone())
                     .await
                     .map_err(|e| format!("create {}: {}", spec.remote_path, e))?;
-                remote
-                    .write_all(&bytes)
+                let mut local = tokio::fs::File::open(&temp)
+                    .await
+                    .map_err(|e| format!("open temp {}: {}", temp.display(), e))?;
+                tokio::io::copy(&mut local, &mut remote)
                     .await
                     .map_err(|e| format!("write {}: {}", spec.remote_path, e))?;
                 remote
@@ -4150,6 +4267,8 @@ impl DuckdbEngine {
         // 3. GetRecords loop.
         let mut out: Vec<JsonValue> = Vec::new();
         let mut polls = 0;
+        let mut last_got = 0usize;
+        let mut shard_closed = false;
         while (out.len() as u64) < spec.max_records && polls < 100 {
             self.check_cancelled()?;
             let remaining = (spec.max_records - out.len() as u64).min(10000);
@@ -4198,18 +4317,38 @@ impl DuckdbEngine {
                     }
                 }
             }
-            // Advance iterator. If response gives a NextShardIterator,
-            // we follow it; otherwise we're done.
+            polls += 1;
+            last_got = got;
+            // Advance the iterator. A null NextShardIterator means the
+            // shard is closed (true end of data); follow it otherwise.
             match rec_resp.get("NextShardIterator").and_then(|v| v.as_str()) {
                 Some(next) => shard_iter = next.to_string(),
-                None => break,
+                None => {
+                    shard_closed = true;
+                    break;
+                }
             }
-            // If this poll returned nothing and we're at the tip,
-            // stop - don't busy-loop on an empty stream.
+            // An empty poll does NOT mean end-of-shard: Kinesis returns
+            // empty record pages while NextShardIterator keeps advancing
+            // (a fresh iterator warming up, or a sparse region) with more
+            // data still ahead. Don't break - sleep briefly to avoid a tight
+            // loop and keep following the iterator until we hit the poll
+            // budget or the shard actually closes.
             if got == 0 {
-                break;
+                std::thread::sleep(std::time::Duration::from_millis(200));
             }
-            polls += 1;
+        }
+        // Fail loud (like the DynamoDB source) if the 100-poll safety cap
+        // cut us off while records were still actively flowing, instead of
+        // silently reporting a truncated read as success.
+        if polls >= 100 && !shard_closed && last_got > 0 && (out.len() as u64) < spec.max_records {
+            return Err(EngineError::Query(format!(
+                "kinesis: reached the 100-poll safety cap after {} record(s) from {}/shard[{}] \
+                 with data still flowing; raise maxRecords or read the shard in smaller passes",
+                out.len(),
+                spec.stream_name,
+                spec.shard_index
+            )));
         }
         let count = out.len();
         materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &out)?;
@@ -4891,7 +5030,10 @@ impl DuckdbEngine {
             )));
         }
         let mut kept: Vec<JsonValue> = Vec::new();
-        let mut kept_embeddings: Vec<Vec<f64>> = Vec::new();
+        // Store each kept embedding alongside its precomputed L2 norm so the
+        // O(N^2) comparison only does the dot-product pass instead of
+        // recomputing both norms on every pair.
+        let mut kept_embeddings: Vec<(Vec<f64>, f64)> = Vec::new();
         for row in rows.iter() {
             self.check_cancelled()?;
             let raw = row.get(&spec.embedding_column);
@@ -4913,17 +5055,19 @@ impl DuckdbEngine {
                 // Missing/invalid embedding - keep the row (don't
                 // silently drop data the user might want).
                 kept.push(row.clone());
-                kept_embeddings.push(Vec::new());
+                kept_embeddings.push((Vec::new(), 0.0));
                 continue;
             };
-            // Drop if any previously-kept embedding is within threshold.
+            // Drop if any previously-kept embedding is within threshold. Reuse
+            // each kept vector's stored norm and compute this row's norm once.
+            let e_norm = l2_norm(&e);
             let is_dup = kept_embeddings
                 .iter()
-                .filter(|p| !p.is_empty())
-                .any(|p| cosine_similarity(p, &e) >= spec.threshold);
+                .filter(|(p, _)| !p.is_empty())
+                .any(|(p, pn)| cosine_similarity_with_norms(p, *pn, &e, e_norm) >= spec.threshold);
             if !is_dup {
                 kept.push(row.clone());
-                kept_embeddings.push(e);
+                kept_embeddings.push((e, e_norm));
             }
         }
         let count = kept.len();
@@ -6244,7 +6388,14 @@ impl DuckdbEngine {
         db: &Path,
         spec: &ClickHouseSourceSpec,
     ) -> Result<String, EngineError> {
-        let url = format!("{}/", spec.endpoint.trim_end_matches('/'));
+        // Disable 64-bit-integer quoting: ClickHouse's default JSON output
+        // emits Int64/UInt64/Int128/Decimal as quoted strings, which would
+        // make DuckDB infer those columns as VARCHAR. The HTTP interface reads
+        // settings from URL params, so this is safe regardless of the query.
+        let url = format!(
+            "{}/?output_format_json_quote_64bit_integers=0",
+            spec.endpoint.trim_end_matches('/')
+        );
         let q = if spec
             .query
             .to_uppercase()
@@ -6252,7 +6403,10 @@ impl DuckdbEngine {
         {
             spec.query.clone()
         } else {
-            format!("{} FORMAT JSON", spec.query.trim())
+            // Strip a trailing ';' before appending the FORMAT clause, else
+            // `SELECT ...; FORMAT JSON` parses as a second, invalid statement.
+            let base = spec.query.trim().trim_end_matches(';').trim_end();
+            format!("{} FORMAT JSON", base)
         };
         let mut req = crate::tls::http_agent().post(&url).set("Content-Type", "text/plain");
         if let Some(u) = &spec.user {
@@ -6428,86 +6582,90 @@ impl DuckdbEngine {
             .enable_all()
             .build()
             .map_err(|e| EngineError::Query(format!("mongo: tokio runtime: {}", e)))?;
-        let docs: Result<Vec<mongodb::bson::Document>, String> = rt.block_on(async {
-            let client = mongodb::Client::with_uri_str(&spec.uri)
-                .await
-                .map_err(|e| format!("connect: {}", e))?;
-            let collection = client
-                .database(&spec.database)
-                .collection::<mongodb::bson::Document>(&spec.collection);
-            let mut out = Vec::new();
-            if let Some(pl) = &spec.pipeline {
-                // #106: aggregation pipeline mode ($match / $lookup / $group ...).
-                let v: serde_json::Value = serde_json::from_str(pl)
-                    .map_err(|e| format!("bad pipeline JSON: {}", e))?;
-                let arr = v
-                    .as_array()
-                    .ok_or_else(|| "pipeline must be a JSON array of stages".to_string())?;
-                let stages = arr
-                    .iter()
-                    .map(|s| {
-                        mongodb::bson::to_document(s)
-                            .map_err(|e| format!("pipeline stage to bson: {}", e))
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                let mut cursor = collection
-                    .aggregate(stages)
+        // Stream documents straight to the NDJSON writer instead of buffering
+        // the whole collection as Vec<Document> AND a second Vec<JsonValue> at
+        // once (the deferred #7 mongo-source-into-RAM fix; the driver cursor
+        // already streams server-side batches). BSON -> JSON conversion still
+        // fails loud per document, and the table is only created on a clean
+        // finalize, so a mid-stream error yields no partial table - same as
+        // before.
+        let writer = JsonLinesWriter::open(&spec.node_id)?;
+        let bin = self.binary();
+        let count: usize = rt
+            .block_on(async move {
+                let mut writer = writer;
+                let client = mongodb::Client::with_uri_str(&spec.uri)
                     .await
-                    .map_err(|e| format!("aggregate: {}", e))?;
-                while cursor.advance().await.map_err(|e| format!("cursor: {}", e))? {
-                    out.push(
-                        cursor
+                    .map_err(|e| format!("connect: {}", e))?;
+                let collection = client
+                    .database(&spec.database)
+                    .collection::<mongodb::bson::Document>(&spec.collection);
+                let mut count = 0usize;
+                if let Some(pl) = &spec.pipeline {
+                    // #106: aggregation pipeline mode ($match / $lookup / $group ...).
+                    let v: serde_json::Value = serde_json::from_str(pl)
+                        .map_err(|e| format!("bad pipeline JSON: {}", e))?;
+                    let arr = v
+                        .as_array()
+                        .ok_or_else(|| "pipeline must be a JSON array of stages".to_string())?;
+                    let stages = arr
+                        .iter()
+                        .map(|s| {
+                            mongodb::bson::to_document(s)
+                                .map_err(|e| format!("pipeline stage to bson: {}", e))
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    let mut cursor = collection
+                        .aggregate(stages)
+                        .await
+                        .map_err(|e| format!("aggregate: {}", e))?;
+                    while cursor.advance().await.map_err(|e| format!("cursor: {}", e))? {
+                        let doc = cursor
                             .deserialize_current()
-                            .map_err(|e| format!("deserialize: {}", e))?,
-                    );
-                }
-            } else {
-                let filter: mongodb::bson::Document = match &spec.filter {
-                    Some(f) => {
-                        let v: serde_json::Value = serde_json::from_str(f)
-                            .map_err(|e| format!("bad filter JSON: {}", e))?;
-                        mongodb::bson::to_document(&v)
-                            .map_err(|e| format!("filter to bson: {}", e))?
+                            .map_err(|e| format!("deserialize: {}", e))?;
+                        let row = serde_json::to_value(&doc)
+                            .map_err(|e| format!("BSON to JSON: {}", e))?;
+                        writer.write_row(&row).map_err(|e| format!("write row: {}", e))?;
+                        count += 1;
                     }
-                    None => mongodb::bson::Document::new(),
-                };
-                let mut find = collection.find(filter);
-                if let Some(limit) = spec.limit {
-                    find = find.limit(limit);
-                }
-                if let Some(p) = &spec.projection {
-                    let pv: serde_json::Value = serde_json::from_str(p)
-                        .map_err(|e| format!("bad projection JSON: {}", e))?;
-                    let pdoc = mongodb::bson::to_document(&pv)
-                        .map_err(|e| format!("projection to bson: {}", e))?;
-                    find = find.projection(pdoc);
-                }
-                let mut cursor = find.await.map_err(|e| format!("find: {}", e))?;
-                while cursor.advance().await.map_err(|e| format!("cursor: {}", e))? {
-                    out.push(
-                        cursor
+                } else {
+                    let filter: mongodb::bson::Document = match &spec.filter {
+                        Some(f) => {
+                            let v: serde_json::Value = serde_json::from_str(f)
+                                .map_err(|e| format!("bad filter JSON: {}", e))?;
+                            mongodb::bson::to_document(&v)
+                                .map_err(|e| format!("filter to bson: {}", e))?
+                        }
+                        None => mongodb::bson::Document::new(),
+                    };
+                    let mut find = collection.find(filter);
+                    if let Some(limit) = spec.limit {
+                        find = find.limit(limit);
+                    }
+                    if let Some(p) = &spec.projection {
+                        let pv: serde_json::Value = serde_json::from_str(p)
+                            .map_err(|e| format!("bad projection JSON: {}", e))?;
+                        let pdoc = mongodb::bson::to_document(&pv)
+                            .map_err(|e| format!("projection to bson: {}", e))?;
+                        find = find.projection(pdoc);
+                    }
+                    let mut cursor = find.await.map_err(|e| format!("find: {}", e))?;
+                    while cursor.advance().await.map_err(|e| format!("cursor: {}", e))? {
+                        let doc = cursor
                             .deserialize_current()
-                            .map_err(|e| format!("deserialize: {}", e))?,
-                    );
+                            .map_err(|e| format!("deserialize: {}", e))?;
+                        let row = serde_json::to_value(&doc)
+                            .map_err(|e| format!("BSON to JSON: {}", e))?;
+                        writer.write_row(&row).map_err(|e| format!("write row: {}", e))?;
+                        count += 1;
+                    }
                 }
-            }
-            Ok(out)
-        });
-        let docs = docs.map_err(|e| EngineError::Query(format!("mongodb source: {}", e)))?;
-        // BSON Document -> JsonValue. Some BSON types (ObjectId, Date)
-        // serialize as objects with {$oid: ...} / {$date: ...} - good
-        // enough for downstream DuckDB to ingest as strings/json.
-        // Fail loud on a BSON->JSON conversion error rather than silently
-        // dropping the document (which would under-count the read).
-        let json_docs: Vec<JsonValue> = docs
-            .iter()
-            .map(|d| {
-                serde_json::to_value(d)
-                    .map_err(|e| EngineError::Query(format!("mongodb: BSON to JSON: {}", e)))
+                writer
+                    .finalize_into_table(bin, db, &spec.node_id)
+                    .map_err(|e| format!("finalize: {}", e))?;
+                Ok::<usize, String>(count)
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        let count = json_docs.len();
-        materialize_jsonobjects_as_table(&self.bin, db, &spec.node_id, &json_docs)?;
+            .map_err(|e| EngineError::Query(format!("mongodb source: {}", e)))?;
         Ok(format!(
             "mongodb: materialized {} docs into {}",
             count, spec.node_id
@@ -6575,18 +6733,20 @@ impl DuckdbEngine {
                         "size": spec.size,
                         "from": from,
                     });
-                    let response = post(&body)?;
+                    let mut response = post(&body)?;
+                    // Move the hits out instead of deep-cloning the whole array
+                    // and then each _source again; `response` is dropped next.
                     let hits = response
-                        .pointer("/hits/hits")
-                        .and_then(|v| v.as_array())
-                        .cloned()
+                        .pointer_mut("/hits/hits")
+                        .and_then(|v| v.as_array_mut())
+                        .map(std::mem::take)
                         .unwrap_or_default();
                     let hit_count = hits.len();
-                    for h in hits {
+                    for mut h in hits {
                         let source = h
-                            .get("_source")
-                            .cloned()
-                            .unwrap_or(JsonValue::Object(Default::default()));
+                            .get_mut("_source")
+                            .map(JsonValue::take)
+                            .unwrap_or_else(|| JsonValue::Object(Default::default()));
                         all_rows.push(source);
                     }
                     pages += 1;
@@ -6614,11 +6774,11 @@ impl DuckdbEngine {
                     if let Some(sa) = &last_sort {
                         body["search_after"] = sa.clone();
                     }
-                    let response = post(&body)?;
+                    let mut response = post(&body)?;
                     let hits = response
-                        .pointer("/hits/hits")
-                        .and_then(|v| v.as_array())
-                        .cloned()
+                        .pointer_mut("/hits/hits")
+                        .and_then(|v| v.as_array_mut())
+                        .map(std::mem::take)
                         .unwrap_or_default();
                     let hit_count = hits.len();
                     // Grab the last hit's sort before we move `hits`.
@@ -6626,11 +6786,11 @@ impl DuckdbEngine {
                         .last()
                         .and_then(|h| h.get("sort"))
                         .cloned();
-                    for h in hits {
+                    for mut h in hits {
                         let source = h
-                            .get("_source")
-                            .cloned()
-                            .unwrap_or(JsonValue::Object(Default::default()));
+                            .get_mut("_source")
+                            .map(JsonValue::take)
+                            .unwrap_or_else(|| JsonValue::Object(Default::default()));
                         all_rows.push(source);
                     }
                     pages += 1;
@@ -7266,7 +7426,7 @@ impl DuckdbEngine {
         // If the server handed us a statementHandle without data
         // (async path: 202 in HTTP terms, but ureq returns 200/202
         // both as Ok), poll until we see data.
-        let mut response = if initial.get("data").is_some() {
+        let response = if initial.get("data").is_some() {
             initial
         } else {
             let handle = initial
@@ -7295,18 +7455,26 @@ impl DuckdbEngine {
         let mut cols: Vec<String> = Vec::with_capacity(row_type.len());
         let mut columns_spec_parts: Vec<String> = Vec::with_capacity(row_type.len());
         let mut select_parts: Vec<String> = Vec::with_capacity(row_type.len());
+        // Disambiguate duplicate result-column names (e.g. SELECT * over a join
+        // where both tables have a STATUS column). Cells are positional, so we
+        // suffix repeats (STATUS, STATUS_1, ...) and key the NDJSON object, the
+        // read_json columns map, and the projection all on the unique name -
+        // otherwise a duplicate struct key fails the read and the second cell
+        // would silently overwrite the first.
+        let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
         for c in row_type {
             // Bail rather than `continue` on a nameless column: the row data is
             // an array of cells positioned by the ORIGINAL column index, so
             // silently dropping one name would shift every later column name
             // onto the wrong cell. (Snowflake always names columns; this just
             // guarantees the name list stays index-aligned with the cells.)
-            let Some(name) = c.get("name").and_then(|n| n.as_str()) else {
+            let Some(raw_name) = c.get("name").and_then(|n| n.as_str()) else {
                 return Err(EngineError::Query(
                     "Snowflake rowType has a column with no name; cannot align result columns"
                         .into(),
                 ));
             };
+            let name = unique_column_name(raw_name, &mut used_names);
             let sf_type = c
                 .get("type")
                 .and_then(|t| t.as_str())
@@ -7314,22 +7482,29 @@ impl DuckdbEngine {
                 .to_ascii_lowercase();
             let scale = c.get("scale").and_then(|s| s.as_i64()).unwrap_or(0);
             let precision = c.get("precision").and_then(|p| p.as_i64()).unwrap_or(38);
-            let ident = plan::quote_ident(name);
-            cols.push(name.to_string());
+            let ident = plan::quote_ident(&name);
             columns_spec_parts.push(format!("'{}': 'VARCHAR'", name.replace('\'', "''")));
             select_parts.push(format!(
                 "{} AS {}",
                 snowflake_cast_expr(&ident, &sf_type, scale, precision),
                 ident
             ));
+            cols.push(name);
         }
         let columns_spec = columns_spec_parts.join(", ");
         let select_list = select_parts.join(", ");
-        let mut all_data = response
+        // Stream partitions into one NDJSON writer as they arrive instead of
+        // accumulating the whole result set in an `all_data` Vec first - peak
+        // memory drops from O(all partitions) to O(one partition) + the writer.
+        let mut writer = JsonLinesWriter::open(&spec.node_id)?;
+        let initial_rows = response
             .get("data")
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
+        let mut total_rows = initial_rows.len();
+        write_arrayrows_to(&mut writer, &cols, &initial_rows)?;
+        drop(initial_rows);
         // Multi-partition: partitionInfo[0] shipped inline (the `data` above);
         // fetch partitions 1..N. Each `?partition=N` body is gzip-compressed
         // (decoded transparently by ureq's gzip feature) and carries NO
@@ -7360,7 +7535,10 @@ impl DuckdbEngine {
                     _ => part.get("data").and_then(|v| v.as_array()).cloned(),
                 };
                 match part_rows {
-                    Some(rows) => all_data.extend(rows),
+                    Some(rows) => {
+                        total_rows += rows.len();
+                        write_arrayrows_to(&mut writer, &cols, &rows)?;
+                    }
                     None => {
                         return Err(EngineError::Query(format!(
                             "Snowflake partition {} returned no row data (unexpected response shape)",
@@ -7370,21 +7548,10 @@ impl DuckdbEngine {
                 }
             }
         }
-        // Pretend warning to silence "response variable unused after
-        // reassignment" if all_data didn't grow.
-        let _ = &mut response;
-        materialize_typed_arrayrows(
-            &self.bin,
-            db,
-            &spec.node_id,
-            &cols,
-            &columns_spec,
-            &select_list,
-            &all_data,
-        )?;
+        writer.finalize_typed(&self.bin, db, &spec.node_id, &columns_spec, &select_list)?;
         Ok(format!(
             "snowflake: materialized {} rows ({} partition(s)) into {}",
-            all_data.len(),
+            total_rows,
             partition_count,
             spec.node_id
         ))
@@ -7457,22 +7624,33 @@ impl DuckdbEngine {
                 )));
             }
         };
-        let cols = response
-            .pointer("/manifest/schema/columns")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| {
-                EngineError::Query(
-                    "Databricks response missing manifest.schema.columns".into(),
-                )
-            })?
-            .iter()
-            .filter_map(|c| c.get("name").and_then(|n| n.as_str()).map(String::from))
-            .collect::<Vec<_>>();
-        let mut all_data = response
+        // Disambiguate duplicate result-column names (cells are positional, so
+        // a SELECT * over a join that shares a column name would otherwise have
+        // the second cell silently overwrite the first in the NDJSON object).
+        let cols = dedupe_names(
+            response
+                .pointer("/manifest/schema/columns")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| {
+                    EngineError::Query(
+                        "Databricks response missing manifest.schema.columns".into(),
+                    )
+                })?
+                .iter()
+                .filter_map(|c| c.get("name").and_then(|n| n.as_str()).map(String::from))
+                .collect::<Vec<_>>(),
+        );
+        // Stream each chunk into one NDJSON writer as it arrives instead of
+        // accumulating the whole result in an `all_data` Vec first.
+        let mut writer = JsonLinesWriter::open(&spec.node_id)?;
+        let initial_rows = response
             .pointer("/result/data_array")
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
+        let mut total_rows = initial_rows.len();
+        write_arrayrows_to(&mut writer, &cols, &initial_rows)?;
+        drop(initial_rows);
         // Follow next_chunk_internal_link until None. The link is a
         // path under the workspace; prepend https://workspace.
         let mut next_link: Option<String> = response
@@ -7501,7 +7679,8 @@ impl DuckdbEngine {
             let chunk = dbr_request(&chunk_url, "GET", &auth, None)?;
             match chunk.get("data_array").and_then(|v| v.as_array()) {
                 Some(d) => {
-                    all_data.extend(d.iter().cloned());
+                    total_rows += d.len();
+                    write_arrayrows_to(&mut writer, &cols, d)?;
                     chunks += 1;
                 }
                 None => {
@@ -7515,10 +7694,10 @@ impl DuckdbEngine {
                 .and_then(|v| v.as_str())
                 .map(String::from);
         }
-        materialize_arrayrows_as_table(&self.bin, db, &spec.node_id, &cols, &all_data)?;
+        writer.finalize_into_table(&self.bin, db, &spec.node_id)?;
         Ok(format!(
             "databricks: materialized {} rows ({} chunk(s)) into {}",
-            all_data.len(),
+            total_rows,
             chunks,
             spec.node_id
         ))
@@ -7998,6 +8177,37 @@ fn tail_chars(s: &str, max: usize) -> &str {
     let skip = count - max;
     let (idx, _) = s.char_indices().nth(skip).unwrap_or((0, ' '));
     &s[idx..]
+}
+
+/// Return a column name not already present in `used`, suffixing repeats as
+/// `name_1`, `name_2`, ... Result-set cells are positional, so two columns that
+/// share a name (e.g. SELECT * over a join) must be keyed uniquely or the
+/// second cell silently overwrites the first (DuckDB also rejects a duplicate
+/// struct key in read_json's columns map). Records the chosen name in `used`.
+fn unique_column_name(raw: &str, used: &mut std::collections::HashSet<String>) -> String {
+    let mut name = raw.to_string();
+    if used.contains(&name) {
+        let mut k = 1usize;
+        loop {
+            let cand = format!("{}_{}", raw, k);
+            if !used.contains(&cand) {
+                name = cand;
+                break;
+            }
+            k += 1;
+        }
+    }
+    used.insert(name.clone());
+    name
+}
+
+/// Disambiguate a whole list of column names in order, suffixing duplicates.
+fn dedupe_names(names: Vec<String>) -> Vec<String> {
+    let mut used: std::collections::HashSet<String> = std::collections::HashSet::new();
+    names
+        .into_iter()
+        .map(|n| unique_column_name(&n, &mut used))
+        .collect()
 }
 
 fn incremental_state_path(pipeline_name: Option<&str>, node_id: &str) -> Option<std::path::PathBuf> {

@@ -2266,7 +2266,12 @@ impl JsonLinesWriter {
             path,
             columns_spec,
         );
-        apply_duckdb_sql(bin, db, &sql)
+        let r = apply_duckdb_sql(bin, db, &sql);
+        // Remove the temp NDJSON (sized to the whole result set) regardless of
+        // the load result; otherwise duckle-rest-*.json accumulate in the temp
+        // dir forever (mirrors finalize_into_table).
+        let _ = std::fs::remove_file(&self.path);
+        r
     }
 }
 
@@ -2290,27 +2295,19 @@ fn unique_rest_tmp_path(node_id: &str) -> PathBuf {
     ))
 }
 
-/// Shared helper for src.snowflake / src.databricks: take an
-/// array-of-arrays response + column names, emit a JSON array of
-/// row objects to a temp file, and CREATE OR REPLACE TABLE node_id
-/// FROM read_json_auto('temp.json', format='array'). DuckDB infers
-/// the types from the JSON content - good enough for downstream
-/// stages to read the result like any other source.
-fn materialize_arrayrows_as_table(
-    bin: &Path,
-    db: &Path,
-    node_id: &str,
+/// Column-zip a batch of positional array-rows into an NDJSON writer (one
+/// `{col: cell}` object per row, cells aligned by index). Shared by the
+/// streaming src.snowflake / src.databricks sources: the caller opens one
+/// JsonLinesWriter, streams each partition / chunk through this as it arrives
+/// (so the whole result set never lives in RAM at once), then finalizes via
+/// finalize_into_table (Databricks) or finalize_typed (Snowflake). A cell
+/// beyond the column list, or a non-array row, yields NULL - identical to the
+/// prior collect-then-materialize behavior, and column order is the cols order.
+pub(crate) fn write_arrayrows_to(
+    writer: &mut JsonLinesWriter,
     cols: &[String],
     rows: &[JsonValue],
 ) -> Result<(), EngineError> {
-    // Stream each column-zipped row object straight to the NDJSON temp
-    // file via JsonLinesWriter instead of building a second re-keyed Vec
-    // plus one giant serialized String (peak ~3x the dataset). The writer
-    // holds O(64 KiB) regardless of row count - same as the sibling
-    // materialize_jsonobjects_as_table. Column order is preserved by the
-    // cols iteration order. Output is identical: finalize reads the file
-    // with format='newline_delimited' (verified equivalent to 'array').
-    let mut writer = JsonLinesWriter::open(node_id)?;
     for row in rows {
         let arr = row.as_array();
         let mut obj = serde_json::Map::new();
@@ -2323,37 +2320,7 @@ fn materialize_arrayrows_as_table(
         }
         writer.write_row(&JsonValue::Object(obj))?;
     }
-    writer.finalize_into_table(bin, db, node_id)
-}
-
-/// Snowflake variant of materialize_arrayrows_as_table: writes the raw
-/// (string) cells as NDJSON keyed by column name, then reads every column as
-/// VARCHAR and projects through `select_list` so each column lands at its real
-/// Snowflake type. `columns_spec` (the read_json `columns={...}` body) and
-/// `select_list` are both built from resultSetMetaData.rowType by the caller.
-fn materialize_typed_arrayrows(
-    bin: &Path,
-    db: &Path,
-    node_id: &str,
-    cols: &[String],
-    columns_spec: &str,
-    select_list: &str,
-    rows: &[JsonValue],
-) -> Result<(), EngineError> {
-    let mut writer = JsonLinesWriter::open(node_id)?;
-    for row in rows {
-        let arr = row.as_array();
-        let mut obj = serde_json::Map::new();
-        for (i, name) in cols.iter().enumerate() {
-            let v = arr
-                .and_then(|a| a.get(i))
-                .cloned()
-                .unwrap_or(JsonValue::Null);
-            obj.insert(name.clone(), v);
-        }
-        writer.write_row(&JsonValue::Object(obj))?;
-    }
-    writer.finalize_typed(bin, db, node_id, columns_spec, select_list)
+    Ok(())
 }
 
 /// Run a single SQL statement against `db` using the engine's own DuckDB
@@ -3283,13 +3250,25 @@ fn build_native_upsert_sql(
                 format!("ON CONFLICT ({}) DO UPDATE SET {}", key_list, set_clause)
             };
             match spec.delete_column.as_deref() {
-                // No delete propagation: insert every staged row verbatim.
-                None => vec![format!(
-                    "INSERT INTO {target} SELECT * FROM {staging} {conflict}; DROP TABLE {staging};",
-                    target = target_native,
-                    staging = staging_native,
-                    conflict = conflict
-                )],
+                // No delete propagation: insert every staged row. Name the
+                // columns explicitly (like the delete branch) so a subset /
+                // reordered upstream maps by name and unprovided target columns
+                // take their defaults, instead of a positional SELECT * that
+                // requires every target column present in exact order.
+                None => {
+                    let col_list = data_cols
+                        .iter()
+                        .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    vec![format!(
+                        "INSERT INTO {target} ({cols}) SELECT {cols} FROM {staging} {conflict}; DROP TABLE {staging};",
+                        target = target_native,
+                        staging = staging_native,
+                        cols = col_list,
+                        conflict = conflict
+                    )]
+                }
                 // Delete propagation: the flag column is staged but is not a
                 // target column, so the INSERT lists explicit data columns and
                 // skips flagged rows; a prior DELETE removes flagged keys.
@@ -3340,18 +3319,29 @@ fn build_native_upsert_sql(
             };
             match spec.delete_column.as_deref() {
                 None => {
+                    // Name the columns explicitly so a subset / reordered
+                    // upstream maps by name; a positional SELECT * breaks when
+                    // the target has extra / DB-managed columns or a different
+                    // column order.
+                    let col_list = data_cols
+                        .iter()
+                        .map(|c| format!("`{}`", c.replace('`', "``")))
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     let insert = if let Some(set_clause) = on_dup {
                         format!(
-                            "INSERT INTO {target} SELECT * FROM {staging} ON DUPLICATE KEY UPDATE {set}",
+                            "INSERT INTO {target} ({cols}) SELECT {cols} FROM {staging} ON DUPLICATE KEY UPDATE {set}",
                             target = target_native,
                             staging = staging_native,
+                            cols = col_list,
                             set = set_clause
                         )
                     } else {
                         format!(
-                            "INSERT IGNORE INTO {target} SELECT * FROM {staging}",
+                            "INSERT IGNORE INTO {target} ({cols}) SELECT {cols} FROM {staging}",
                             target = target_native,
-                            staging = staging_native
+                            staging = staging_native,
+                            cols = col_list
                         )
                     };
                     vec![insert, format!("DROP TABLE {}", staging_native)]

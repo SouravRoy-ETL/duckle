@@ -761,25 +761,34 @@ pub(crate) fn read_http_request(
     Ok((method, path, headers, body))
 }
 
-/// Cosine similarity between two equal-length float vectors. Used by
-/// xf.ai.dedupe. Returns 0.0 if either vector is empty / lengths
-/// mismatch / either has zero magnitude (all-zero vector).
+/// Cosine similarity between two equal-length float vectors. Returns 0.0 if
+/// either vector is empty / lengths mismatch / either has zero magnitude.
+/// Retained for the public API + unit tests; xf.ai.dedupe uses
+/// cosine_similarity_with_norms to avoid recomputing norms in its O(N^2) loop.
+#[allow(dead_code)]
 pub(crate) fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
-    if a.is_empty() || a.len() != b.len() {
+    cosine_similarity_with_norms(a, l2_norm(a), b, l2_norm(b))
+}
+
+/// L2 norm (sqrt of the sum of squares) of a float vector.
+pub(crate) fn l2_norm(v: &[f64]) -> f64 {
+    v.iter().map(|x| x * x).sum::<f64>().sqrt()
+}
+
+/// Cosine similarity using precomputed L2 norms. Bit-identical to
+/// `cosine_similarity(a, b)` when `norm_a == l2_norm(a)` and
+/// `norm_b == l2_norm(b)`, but only does the dot-product pass - used by
+/// xf.ai.dedupe so each kept vector's norm is computed once instead of on
+/// every one of the O(N^2) comparisons.
+pub(crate) fn cosine_similarity_with_norms(a: &[f64], norm_a: f64, b: &[f64], norm_b: f64) -> f64 {
+    if a.is_empty() || a.len() != b.len() || norm_a == 0.0 || norm_b == 0.0 {
         return 0.0;
     }
     let mut dot = 0.0;
-    let mut na = 0.0;
-    let mut nb = 0.0;
     for (x, y) in a.iter().zip(b.iter()) {
         dot += x * y;
-        na += x * x;
-        nb += y * y;
     }
-    if na == 0.0 || nb == 0.0 {
-        return 0.0;
-    }
-    dot / (na.sqrt() * nb.sqrt())
+    dot / (norm_a * norm_b)
 }
 
 /// Render a prompt template by substituting `{column_name}` tokens
