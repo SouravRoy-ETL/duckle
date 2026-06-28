@@ -8,6 +8,7 @@
 use crate::catalog;
 use duckle_duckdb_engine::{compile_pipeline_sql, DuckdbEngine, PipelineDoc};
 use serde_json::{json, Value};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -93,6 +94,13 @@ pub fn list_tools() -> Value {
                 "path": { "type": "string", "description": "Path to a pipeline .json (use instead of 'pipeline')." },
                 "duckdb": { "type": "string", "description": "DuckDB CLI path for lineage resolution. Defaults to DUCKLE_DUCKDB_BIN or 'duckdb' on PATH." }
             }})),
+        tool("suggest_contracts",
+            "Profile a pipeline's columns and suggest data contracts to add: PII tags (heuristic, name-based) and source requireColumns anchors. Returns per-node suggestedContracts you can merge with update_pipeline, after which verify_pipeline enforces the PII-to-sink guard. Static; uses declared schemas, and column lineage too when a DuckDB binary is available.",
+            json!({ "type": "object", "properties": {
+                "pipeline": { "type": "object", "description": "Inline pipeline object." },
+                "path": { "type": "string", "description": "Path to a pipeline .json (use instead of 'pipeline')." },
+                "duckdb": { "type": "string", "description": "DuckDB CLI path - lets lineage cover transform/sink columns too. Defaults to DUCKLE_DUCKDB_BIN or 'duckdb' on PATH." }
+            }})),
         tool("list_pipelines",
             "List pipeline .json files in a directory with their node/edge counts.",
             json!({ "type": "object", "properties": {
@@ -160,6 +168,7 @@ pub fn call_tool(params: Value) -> Result<Value, (i64, String)> {
         "run_pipeline" => t_run_pipeline(&args),
         "pipeline_lineage" => t_pipeline_lineage(&args),
         "verify_pipeline" => t_verify_pipeline(&args),
+        "suggest_contracts" => t_suggest_contracts(&args),
         "list_pipelines" => t_list_pipelines(&args),
         "read_pipeline" => t_read_pipeline(&args),
         "read_run_logs" => t_read_run_logs(&args),
@@ -366,6 +375,170 @@ fn t_verify_pipeline(args: &Value) -> Result<Value, String> {
         "lineageResolved": lineage_resolved,
         "lineage": lineage,
         "risks": risks,
+    }))
+}
+
+/// Heuristic, name-based PII classification. Returns a category label when a
+/// column name looks like personal data, else None. Keywords are matched against
+/// the name with separators removed (so first_name, firstName and FIRSTNAME all
+/// hit "firstname"). Deliberately high-precision: these are SUGGESTIONS a human
+/// or agent reviews, not a proof, so we favour few false positives over recall.
+fn looks_like_pii(column: &str) -> Option<&'static str> {
+    let norm: String = column
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect();
+    // Ordered most-specific first; first match wins so emailAddress -> "email".
+    const PATTERNS: &[(&str, &str)] = &[
+        ("email", "email"),
+        ("ssn", "national_id"),
+        ("socialsecurity", "national_id"),
+        ("passport", "national_id"),
+        ("nationalid", "national_id"),
+        ("taxid", "national_id"),
+        ("dateofbirth", "date_of_birth"),
+        ("birthdate", "date_of_birth"),
+        ("birthday", "date_of_birth"),
+        ("firstname", "name"),
+        ("lastname", "name"),
+        ("fullname", "name"),
+        ("surname", "name"),
+        ("maidenname", "name"),
+        ("creditcard", "financial"),
+        ("cardnumber", "financial"),
+        ("iban", "financial"),
+        ("accountnumber", "financial"),
+        ("routingnumber", "financial"),
+        ("driverlicense", "license"),
+        ("driverslicense", "license"),
+        ("licensenumber", "license"),
+        ("ipaddress", "ip_address"),
+        ("streetaddress", "address"),
+        ("homeaddress", "address"),
+        ("postalcode", "address"),
+        ("zipcode", "address"),
+        ("phone", "phone"),
+        ("mobilenumber", "phone"),
+        ("telephone", "phone"),
+    ];
+    PATTERNS
+        .iter()
+        .find(|(kw, _)| norm.contains(kw))
+        .map(|(_, cat)| *cat)
+}
+
+/// Column names a node declares statically in its Schema panel (works without a
+/// DuckDB binary). Reads the raw `data.schema` array of `{ name }` entries.
+fn declared_columns(node: &Value) -> Vec<String> {
+    node.get("data")
+        .and_then(|d| d.get("schema"))
+        .and_then(|s| s.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| {
+                    c.get("name")
+                        .and_then(|n| n.as_str())
+                        .or_else(|| c.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn t_suggest_contracts(args: &Value) -> Result<Value, String> {
+    let (v, _name) = load_pipeline_value(args)?;
+
+    // Collect each node's known columns: declared schema (static) unioned with
+    // column lineage (covers transforms/sinks too) when a DuckDB binary is found.
+    let mut cols_by_node: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    if let Some(nodes) = v.get("nodes").and_then(|n| n.as_array()) {
+        for n in nodes {
+            let id = match n.get("id").and_then(|x| x.as_str()) {
+                Some(s) if !s.is_empty() => s,
+                _ => continue,
+            };
+            let entry = cols_by_node.entry(id.to_string()).or_default();
+            entry.extend(declared_columns(n));
+        }
+    }
+    let mut lineage_used = false;
+    if let Ok(doc) = to_doc(&v) {
+        if let Some(duckdb) = resolve_duckdb(arg_str(args, "duckdb")) {
+            if let Ok(l) = DuckdbEngine::new(duckdb).pipeline_column_lineage(&doc) {
+                lineage_used = true;
+                for (node_id, cols) in l {
+                    let entry = cols_by_node.entry(node_id).or_default();
+                    for (col, _roots) in cols {
+                        entry.insert(col);
+                    }
+                }
+            }
+        }
+    }
+
+    // Build per-node suggestions: PII tags wherever a column name looks personal,
+    // plus requireColumns on sources to anchor "this source must deliver these".
+    let mut suggestions: Vec<Value> = Vec::new();
+    if let Some(nodes) = v.get("nodes").and_then(|n| n.as_array()) {
+        for n in nodes {
+            let id = match n.get("id").and_then(|x| x.as_str()) {
+                Some(s) if !s.is_empty() => s,
+                _ => continue,
+            };
+            let cid = n
+                .get("data")
+                .and_then(|d| d.get("componentId"))
+                .and_then(|c| c.as_str())
+                .unwrap_or("");
+            let label = n
+                .get("data")
+                .and_then(|d| d.get("label"))
+                .and_then(|c| c.as_str())
+                .unwrap_or("");
+            let cols = match cols_by_node.get(id) {
+                Some(c) if !c.is_empty() => c,
+                _ => continue,
+            };
+
+            let pii_matches: Vec<Value> = cols
+                .iter()
+                .filter_map(|c| looks_like_pii(c).map(|cat| json!({ "column": c, "category": cat })))
+                .collect();
+
+            let mut contracts = serde_json::Map::new();
+            if !pii_matches.is_empty() {
+                let pii_cols: Vec<&str> =
+                    pii_matches.iter().filter_map(|m| m["column"].as_str()).collect();
+                contracts.insert("pii".to_string(), json!(pii_cols));
+            }
+            if cid.starts_with("src.") {
+                contracts.insert(
+                    "requireColumns".to_string(),
+                    json!(cols.iter().collect::<Vec<_>>()),
+                );
+            }
+            if contracts.is_empty() {
+                continue;
+            }
+            suggestions.push(json!({
+                "nodeId": id,
+                "label": label,
+                "componentId": cid,
+                "piiMatches": pii_matches,
+                "suggestedContracts": Value::Object(contracts),
+            }));
+        }
+    }
+
+    let columns_known = cols_by_node.values().any(|c| !c.is_empty());
+    Ok(json!({
+        "ok": true,
+        "columnsKnown": columns_known,
+        "lineageUsed": lineage_used,
+        "suggestions": suggestions,
+        "note": "Heuristic name-based PII detection - review before applying. Merge each suggestedContracts into that node's data.properties.contracts (e.g. via update_pipeline), then verify_pipeline blocks a tagged column reaching a sink. To allow one, add a qa.mask upstream or set contracts.allowPii=true on the sink. Pass a DuckDB binary to also cover transform/sink columns via lineage.",
     }))
 }
 
@@ -1158,5 +1331,51 @@ mod verify_tests {
         assert!(structural_risks(&p)
             .iter()
             .any(|r| r["code"] == "sink_without_input" && r["severity"] == "error"));
+    }
+
+    #[test]
+    fn looks_like_pii_matches_common_names_and_ignores_plain_ones() {
+        assert_eq!(looks_like_pii("email"), Some("email"));
+        assert_eq!(looks_like_pii("emailAddress"), Some("email"));
+        assert_eq!(looks_like_pii("customer_email"), Some("email"));
+        assert_eq!(looks_like_pii("first_name"), Some("name"));
+        assert_eq!(looks_like_pii("SSN"), Some("national_id"));
+        assert_eq!(looks_like_pii("date_of_birth"), Some("date_of_birth"));
+        assert_eq!(looks_like_pii("phone_number"), Some("phone"));
+        assert_eq!(looks_like_pii("order_id"), None);
+        assert_eq!(looks_like_pii("amount"), None);
+        assert_eq!(looks_like_pii("created_at"), None);
+    }
+
+    #[test]
+    fn declared_columns_reads_schema_array() {
+        let n = json!({ "id": "s", "data": { "schema": [ { "name": "email" }, { "name": "qty" } ] } });
+        assert_eq!(declared_columns(&n), vec!["email".to_string(), "qty".to_string()]);
+    }
+
+    #[test]
+    fn suggest_contracts_tags_pii_from_source_schema_without_duckdb() {
+        let pipeline = json!({
+            "nodes": [
+                { "id": "s", "data": { "componentId": "src.csv", "label": "People",
+                    "schema": [ { "name": "email" }, { "name": "order_id" }, { "name": "amount" } ] } },
+                { "id": "k", "data": { "componentId": "snk.csv", "label": "Out" } }
+            ],
+            "edges": [ { "source": "s", "target": "k" } ]
+        });
+        let out = t_suggest_contracts(&json!({ "pipeline": pipeline })).unwrap();
+        let suggestions = out["suggestions"].as_array().unwrap();
+        let src = suggestions
+            .iter()
+            .find(|s| s["nodeId"] == "s")
+            .expect("source has a suggestion");
+        let pii = src["suggestedContracts"]["pii"].as_array().unwrap();
+        assert_eq!(pii.len(), 1);
+        assert_eq!(pii[0], "email");
+        // requireColumns anchors the source's declared columns.
+        let req = src["suggestedContracts"]["requireColumns"].as_array().unwrap();
+        assert_eq!(req.len(), 3);
+        // A sink with no declared/lineage columns yields no suggestion.
+        assert!(suggestions.iter().all(|s| s["nodeId"] != "k"));
     }
 }
