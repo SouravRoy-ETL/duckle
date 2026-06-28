@@ -271,6 +271,12 @@ jobs:
       - name: Start MinIO + create bucket
         run: |
           set -e
+          # Docker Hub pulls flake intermittently (registry timeouts); retry the
+          # pull before running so a transient hiccup does not fail the job.
+          for i in 1 2 3; do
+            docker pull minio/minio:latest && break
+            echo "docker pull attempt $i failed; retrying in 5s"; sleep 5
+          done
           docker run -d --name minio -p 9000:9000 -p 9001:9001 \
             -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
             minio/minio:latest server /data --console-address ":9001"
