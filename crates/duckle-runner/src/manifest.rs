@@ -79,9 +79,19 @@ fn lineage_to_json(lineage: Lineage) -> Value {
     Value::Object(out)
 }
 
+/// A node's run outcome to record in the manifest: the rows it produced and
+/// whether it succeeded. Built from the engine's per-node run status.
+pub struct NodeOutcome {
+    pub node: String,
+    pub status: String,
+    pub rows: Option<u64>,
+}
+
 /// Build, sign and write a manifest for a completed run. Returns the file path.
 /// `lineage` is the engine's resolved column lineage when available; it is
 /// embedded so the signed artifact records where each output column came from.
+/// `outputs` records each node's row count and status, so the signed artifact
+/// attests to what the run produced, not just the pipeline definition.
 pub fn write_manifest(
     workspace: &Path,
     name: &str,
@@ -90,6 +100,7 @@ pub fn write_manifest(
     duration_ms: u64,
     stamp_ms: u128,
     lineage: Option<Lineage>,
+    outputs: &[NodeOutcome],
 ) -> Result<PathBuf, String> {
     let pipeline_hash = sha256_hex(&serde_json::to_vec(doc).unwrap_or_default());
     let compiled_hash = match compile_pipeline_sql(doc) {
@@ -97,6 +108,16 @@ pub fn write_manifest(
         Err(e) => return Err(format!("compile for manifest: {e}")),
     };
     let lineage_json = lineage.map(lineage_to_json);
+    let outputs_json: Vec<Value> = outputs
+        .iter()
+        .map(|o| {
+            let mut m = json!({ "node": o.node, "status": o.status });
+            if let Some(r) = o.rows {
+                m["rows"] = json!(r);
+            }
+            m
+        })
+        .collect();
     let mut body = json!({
         "schemaVersion": SCHEMA_VERSION,
         "pipeline": name,
@@ -104,6 +125,7 @@ pub fn write_manifest(
         "status": status,
         "durationMs": duration_ms,
         "nodeCount": doc.nodes.len(),
+        "outputs": outputs_json,
         "pipelineHash": pipeline_hash,
         "compiledPlanHash": compiled_hash,
         "duckleVersion": env!("CARGO_PKG_VERSION"),
@@ -175,12 +197,19 @@ mod tests {
             r#"{"nodes":[{"id":"s","position":{"x":0,"y":0},"data":{"label":"A","componentId":"src.csv","properties":{"path":"a.csv"}}}],"edges":[]}"#,
         )
         .unwrap();
-        let path = write_manifest(ws, "demo", &doc, "ok", 12, 1_700_000_000_000, None).unwrap();
+        let outputs = vec![NodeOutcome { node: "s".into(), status: "ok".into(), rows: Some(3) }];
+        let path =
+            write_manifest(ws, "demo", &doc, "ok", 12, 1_700_000_000_000, None, &outputs).unwrap();
         assert!(verify_manifest(&path).unwrap(), "fresh manifest should verify");
 
-        // Tamper with the body: verification must fail.
+        // The run outcome is recorded.
+        let m: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(m["body"]["outputs"][0]["node"], json!("s"));
+        assert_eq!(m["body"]["outputs"][0]["rows"], json!(3));
+
+        // Tamper with a recorded row count: verification must fail.
         let mut m: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        m["body"]["durationMs"] = json!(99999);
+        m["body"]["outputs"][0]["rows"] = json!(99999);
         std::fs::write(&path, serde_json::to_vec(&m).unwrap()).unwrap();
         assert!(!verify_manifest(&path).unwrap(), "tampered manifest must fail");
     }
@@ -202,7 +231,7 @@ mod tests {
             )],
         );
         let path =
-            write_manifest(ws, "demo", &doc, "ok", 5, 1_700_000_000_001, Some(lineage)).unwrap();
+            write_manifest(ws, "demo", &doc, "ok", 5, 1_700_000_000_001, Some(lineage), &[]).unwrap();
         assert!(verify_manifest(&path).unwrap(), "manifest with lineage should verify");
 
         let m: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();

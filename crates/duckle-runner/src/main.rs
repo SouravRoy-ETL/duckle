@@ -347,6 +347,17 @@ fn run() -> Result<bool, String> {
         // Best-effort column lineage to embed in the signed artifact; a
         // resolution failure just omits it rather than failing the manifest.
         let lineage = engine.pipeline_column_lineage(&doc).ok();
+        // Per-node run outcome (rows + status) so the manifest attests to what
+        // the run produced. result.nodes is a BTreeMap, so this is deterministic.
+        let outputs: Vec<manifest::NodeOutcome> = result
+            .nodes
+            .iter()
+            .map(|(id, st)| manifest::NodeOutcome {
+                node: id.clone(),
+                status: st.status.clone(),
+                rows: st.rows,
+            })
+            .collect();
         match manifest::write_manifest(
             &workspace,
             &name,
@@ -355,6 +366,7 @@ fn run() -> Result<bool, String> {
             result.duration_ms,
             stamp,
             lineage,
+            &outputs,
         ) {
             Ok(path) => println!("manifest : {}", path.display()),
             Err(e) => eprintln!("manifest : skipped ({e})"),
