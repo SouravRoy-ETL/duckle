@@ -611,6 +611,129 @@ fn find_pipeline_json(root: &Path) -> Result<PathBuf, String> {
     Err(format!("no pipeline json found under {}", dir.display()))
 }
 
+const REVIEW_USAGE: &str = "\
+duckle-runner review - review a pipeline change before merging it
+
+USAGE:
+    duckle-runner review --before <old.json> --after <new.json> [--json]
+
+Reports what changed between two pipeline versions (nodes added/removed/changed,
+edges, and whether the compiled SQL changed) and whether each version still
+compiles. Static and read-only: nothing is executed, no DuckDB binary needed.
+
+Exit code: 0 reviewed, 1 the --after version fails to compile, 2 usage/IO error.";
+
+/// `duckle-runner review`: static review of a pipeline change. Compares two
+/// versions and reports the diff plus each side's compile status. Returns the
+/// process exit code.
+fn run_review() -> Result<i32, String> {
+    let mut before: Option<PathBuf> = None;
+    let mut after: Option<PathBuf> = None;
+    let mut as_json = false;
+    let mut it = std::env::args().skip(2); // skip the exe and the "review" verb
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--before" => before = Some(PathBuf::from(it.next().ok_or("--before needs a value")?)),
+            "--after" => after = Some(PathBuf::from(it.next().ok_or("--after needs a value")?)),
+            "--json" => as_json = true,
+            "-h" | "--help" => {
+                println!("{REVIEW_USAGE}");
+                return Ok(0);
+            }
+            other if before.is_none() && !other.starts_with('-') => {
+                before = Some(PathBuf::from(other))
+            }
+            other if after.is_none() && !other.starts_with('-') => {
+                after = Some(PathBuf::from(other))
+            }
+            other => return Err(format!("unknown argument: {other}")),
+        }
+    }
+    let before = before.ok_or("--before <file> is required")?;
+    let after = after.ok_or("--after <file> is required")?;
+
+    let load = |p: &Path| -> Result<serde_json::Value, String> {
+        let text = std::fs::read_to_string(p).map_err(|e| format!("read {}: {e}", p.display()))?;
+        serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", p.display()))
+    };
+    let bv = load(&before)?;
+    let av = load(&after)?;
+
+    // Compile status of each side. A change that breaks compilation is the gate.
+    let compiles = |v: &serde_json::Value| -> Result<(), String> {
+        let doc: PipelineDoc =
+            serde_json::from_value(v.clone()).map_err(|e| format!("invalid pipeline: {e}"))?;
+        duckle_duckdb_engine::compile_pipeline_sql(&doc).map(|_| ()).map_err(|e| e.to_string())
+    };
+    let before_compiles = compiles(&bv);
+    let after_compiles = compiles(&av);
+
+    let report = duckle_duckdb_engine::review::diff_pipelines(&bv, &av);
+
+    if as_json {
+        let out = serde_json::json!({
+            "before": { "path": before.display().to_string(),
+                "compiles": before_compiles.is_ok(),
+                "error": before_compiles.as_ref().err() },
+            "after": { "path": after.display().to_string(),
+                "compiles": after_compiles.is_ok(),
+                "error": after_compiles.as_ref().err() },
+            "diff": report,
+        });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+    } else {
+        let yn = |r: &Result<(), String>| if r.is_ok() { "yes" } else { "no" };
+        println!("review: {} -> {}", before.display(), after.display());
+        println!("  before compiles : {}", yn(&before_compiles));
+        println!("  after compiles  : {}", yn(&after_compiles));
+        if let Err(e) = &after_compiles {
+            println!("    after error   : {e}");
+        }
+        let s = &report["summary"];
+        let n = |k: &str| s[k].as_u64().unwrap_or(0);
+        println!(
+            "  nodes: +{} added  -{} removed  ~{} changed",
+            n("nodesAdded"),
+            n("nodesRemoved"),
+            n("nodesChanged")
+        );
+        println!("  edges: +{} added  -{} removed", n("edgesAdded"), n("edgesRemoved"));
+        println!("  plan changed: {}", if s["planChanged"] == serde_json::json!(true) { "yes" } else { "no" });
+        let arr = |k: &str| report["nodes"][k].as_array().cloned().unwrap_or_default();
+        for node in arr("added") {
+            println!("    + {} {}", node["node"].as_str().unwrap_or(""), node["componentId"].as_str().unwrap_or(""));
+        }
+        for node in arr("removed") {
+            println!("    - {} {}", node["node"].as_str().unwrap_or(""), node["componentId"].as_str().unwrap_or(""));
+        }
+        for node in arr("changed") {
+            let mut tags = Vec::new();
+            if !node["componentChanged"].is_null() {
+                tags.push(format!(
+                    "component {}->{}",
+                    node["componentChanged"]["from"].as_str().unwrap_or(""),
+                    node["componentChanged"]["to"].as_str().unwrap_or("")
+                ));
+            }
+            if node["propertiesChanged"] == serde_json::json!(true) {
+                tags.push("properties".to_string());
+            }
+            if node["planChanged"] == serde_json::json!(true) {
+                tags.push("plan".to_string());
+            }
+            println!(
+                "    ~ {} ({}) [{}]",
+                node["node"].as_str().unwrap_or(""),
+                node["label"].as_str().unwrap_or(""),
+                tags.join(", ")
+            );
+        }
+    }
+
+    // Fail the gate when the proposed (after) version no longer compiles.
+    Ok(if after_compiles.is_err() { 1 } else { 0 })
+}
+
 fn main() -> ExitCode {
     // Artifact probe FIRST: if this executable carries a self-extracting
     // payload trailer, run the embedded pipeline and exit. A plain runner
@@ -651,6 +774,17 @@ fn main() -> ExitCode {
     if std::env::args().nth(1).as_deref() == Some("web") {
         return match serve::run_web() {
             Ok(()) => ExitCode::from(0),
+            Err(e) => {
+                eprintln!("duckle-runner: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
+
+    // `review` -> static review of a pipeline change (diff + compile gate).
+    if std::env::args().nth(1).as_deref() == Some("review") {
+        return match run_review() {
+            Ok(code) => ExitCode::from(code as u8),
             Err(e) => {
                 eprintln!("duckle-runner: {e}");
                 ExitCode::from(2)

@@ -31,6 +31,7 @@ pub mod lineage;
 pub mod gizmosql;
 pub mod plan;
 pub mod qvd;
+pub mod review;
 pub mod tls;
 pub mod watermark;
 mod connectors;

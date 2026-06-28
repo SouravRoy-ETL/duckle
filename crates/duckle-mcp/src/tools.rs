@@ -358,123 +358,15 @@ fn load_side(args: &Value, inline: &str, path: &str) -> Result<Value, String> {
     }
 }
 
-/// Compile each node to SQL for plan-level comparison. Best-effort: a compile
-/// failure yields an empty map, so planChanged just falls back to false.
-fn plan_sql_map(p: &Value) -> std::collections::HashMap<String, String> {
-    let mut m = std::collections::HashMap::new();
-    if let Ok(doc) = to_doc(p) {
-        if let Ok(stages) = compile_pipeline_sql(&doc) {
-            for st in stages {
-                m.insert(st.node_id, st.sql);
-            }
-        }
-    }
-    m
-}
-
 fn t_diff_pipelines(args: &Value) -> Result<Value, String> {
     let before = load_side(args, "before", "beforePath")?;
     let after = load_side(args, "after", "afterPath")?;
-
-    // Index nodes by id straight off the raw JSON (struct-independent).
-    let index = |p: &Value| -> std::collections::BTreeMap<String, Value> {
-        let mut m = std::collections::BTreeMap::new();
-        if let Some(nodes) = p.get("nodes").and_then(|n| n.as_array()) {
-            for n in nodes {
-                if let Some(id) = n.get("id").and_then(|v| v.as_str()) {
-                    m.insert(id.to_string(), n.clone());
-                }
-            }
-        }
-        m
-    };
-    let a = index(&before);
-    let b = index(&after);
-
-    let comp = |n: &Value| {
-        n.pointer("/data/componentId").and_then(|v| v.as_str()).unwrap_or("").to_string()
-    };
-    let label =
-        |n: &Value| n.pointer("/data/label").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let props = |n: &Value| n.pointer("/data/properties").cloned().unwrap_or(Value::Null);
-
-    let pa = plan_sql_map(&before);
-    let pb = plan_sql_map(&after);
-
-    let mut added = Vec::new();
-    let mut removed = Vec::new();
-    let mut changed = Vec::new();
-    for (id, n) in &b {
-        if !a.contains_key(id) {
-            added.push(json!({ "node": id, "componentId": comp(n), "label": label(n) }));
-        }
+    // Shared with the duckle-runner `review` CLI so both report the same diff.
+    let mut report = duckle_duckdb_engine::review::diff_pipelines(&before, &after);
+    if let Some(obj) = report.as_object_mut() {
+        obj.insert("ok".to_string(), json!(true));
     }
-    for (id, n) in &a {
-        if !b.contains_key(id) {
-            removed.push(json!({ "node": id, "componentId": comp(n), "label": label(n) }));
-        }
-    }
-    for (id, na) in &a {
-        if let Some(nb) = b.get(id) {
-            let (comp_a, comp_b) = (comp(na), comp(nb));
-            let component_changed = comp_a != comp_b;
-            let properties_changed = props(na) != props(nb);
-            let plan_changed = pa.get(id) != pb.get(id);
-            if component_changed || properties_changed || plan_changed {
-                changed.push(json!({
-                    "node": id,
-                    "label": label(nb),
-                    "componentChanged": if component_changed {
-                        json!({ "from": comp_a, "to": comp_b })
-                    } else {
-                        Value::Null
-                    },
-                    "propertiesChanged": properties_changed,
-                    "planChanged": plan_changed,
-                }));
-            }
-        }
-    }
-
-    // Edges keyed by source/target plus handles, so a rewire is add + remove.
-    let edge_key = |e: &Value| {
-        let g = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        format!("{}->{}|{}|{}", g("source"), g("target"), g("sourceHandle"), g("targetHandle"))
-    };
-    let edge_set = |p: &Value| -> std::collections::BTreeMap<String, Value> {
-        let mut m = std::collections::BTreeMap::new();
-        if let Some(edges) = p.get("edges").and_then(|e| e.as_array()) {
-            for e in edges {
-                let g = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-                m.insert(edge_key(e), json!({ "source": g("source"), "target": g("target") }));
-            }
-        }
-        m
-    };
-    let ea = edge_set(&before);
-    let eb = edge_set(&after);
-    let edges_added: Vec<Value> =
-        eb.iter().filter(|(k, _)| !ea.contains_key(*k)).map(|(_, v)| v.clone()).collect();
-    let edges_removed: Vec<Value> =
-        ea.iter().filter(|(k, _)| !eb.contains_key(*k)).map(|(_, v)| v.clone()).collect();
-
-    let plan_changed_any = !added.is_empty()
-        || !removed.is_empty()
-        || changed.iter().any(|c| c["planChanged"] == json!(true));
-
-    Ok(json!({
-        "ok": true,
-        "summary": {
-            "nodesAdded": added.len(),
-            "nodesRemoved": removed.len(),
-            "nodesChanged": changed.len(),
-            "edgesAdded": edges_added.len(),
-            "edgesRemoved": edges_removed.len(),
-            "planChanged": plan_changed_any,
-        },
-        "nodes": { "added": added, "removed": removed, "changed": changed },
-        "edges": { "added": edges_added, "removed": edges_removed },
-    }))
+    Ok(report)
 }
 
 /// Cheap, deterministic graph checks that do not require execution. Reads the
