@@ -2103,13 +2103,16 @@ fn now_nanos() -> u128 {
 }
 
 /// Best-effort: create the parent directory of every local file sink's output
-/// path before the run. DuckDB's `COPY ... TO` does not create intermediate
-/// directories, so a timestamped path like `exports/${date}/out.csv` (already
-/// resolved by [`context::apply_time_builtins`]) would otherwise fail the first
-/// time today's folder is needed. Considers only `snk.*` nodes with a string
-/// `path` property; skips cloud URIs (anything containing `://`) and driver
-/// sinks (which carry no `path`). Errors are ignored - the COPY surfaces the
-/// real one if the directory still can't be made.
+/// before the run. Neither DuckDB's `COPY ... TO` nor `ATTACH` creates
+/// intermediate directories, so a timestamped path like `exports/${date}/out.csv`
+/// (already resolved by [`context::apply_time_builtins`]) or a fresh
+/// `out/warehouse.duckdb` would otherwise fail the first time the folder is
+/// needed. Considers `snk.*` nodes; the output file lives in `path` for the
+/// COPY-to-file sinks and in `database` for the file-backed DB sinks
+/// (snk.duckdb / snk.sqlite). Skips cloud URIs (anything containing `://`) and
+/// values with no parent directory (a bare server DB name like `mydb`, or
+/// `:memory:`). Errors are ignored - the COPY / ATTACH surfaces the real one if
+/// the directory still can't be made.
 fn ensure_local_sink_dirs(doc: &PipelineDoc) {
     for node in &doc.nodes {
         let is_sink = node
@@ -2121,20 +2124,19 @@ fn ensure_local_sink_dirs(doc: &PipelineDoc) {
         if !is_sink {
             continue;
         }
-        let path = match node
-            .data
-            .properties
-            .as_ref()
-            .and_then(|p| p.get("path"))
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-        {
-            Some(p) if !p.is_empty() && !p.contains("://") => p,
-            _ => continue,
+        let props = match node.data.properties.as_ref() {
+            Some(p) => p,
+            None => continue,
         };
-        if let Some(parent) = Path::new(path).parent() {
-            if !parent.as_os_str().is_empty() {
-                let _ = std::fs::create_dir_all(parent);
+        for key in ["path", "database"] {
+            let target = match props.get(key).and_then(|v| v.as_str()).map(str::trim) {
+                Some(p) if !p.is_empty() && !p.contains("://") => p,
+                _ => continue,
+            };
+            if let Some(parent) = Path::new(target).parent() {
+                if !parent.as_os_str().is_empty() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
             }
         }
     }

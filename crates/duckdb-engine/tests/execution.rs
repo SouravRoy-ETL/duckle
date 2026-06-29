@@ -10415,6 +10415,110 @@ fn ducklake_cdc_reads_incremental_changes() {
 }
 
 #[test]
+fn ducklake_cdc_explicit_schema_reads_changes() {
+    // Regression: setting the schema field (the manifest defaults it to "main")
+    // must still read the change feed. The reader uses the global
+    // ducklake_table_changes(catalog, schema, table, from, to) so a schema-
+    // qualified table resolves; the old catalog-method form
+    // duckle_src.table_changes('main.t', ...) failed with "Table main.t does
+    // not exist".
+    let engine = engine_or_skip!();
+    let bin = std::env::var("DUCKLE_DUCKDB_BIN").unwrap();
+    let _env = env_guard();
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path();
+    std::env::set_var("DUCKLE_WORKSPACE", ws);
+    let cat = ws.join("lake.ducklake").to_string_lossy().replace('\\', "/");
+    let out = out_path(ws, "cdc_schema.csv");
+    let cli = |sql: &str| {
+        let o = std::process::Command::new(&bin)
+            .arg("-c")
+            .arg(sql)
+            .output()
+            .expect("run duckdb cli");
+        assert!(
+            o.status.success(),
+            "duckdb cli failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+    };
+    let attach = format!(
+        "INSTALL ducklake; LOAD ducklake; ATTACH 'ducklake:{}' AS lake; ",
+        cat
+    );
+    cli(&format!(
+        "{}CREATE TABLE lake.t(id INT, name VARCHAR); INSERT INTO lake.t VALUES (1,'a'),(2,'b');",
+        attach
+    ));
+    if !std::path::Path::new(&cat).exists() {
+        std::env::remove_var("DUCKLE_WORKSPACE");
+        eprintln!("skipping: ducklake extension unavailable for this DuckDB build");
+        return;
+    }
+
+    let d = doc(
+        json!([
+            node(
+                "c",
+                "src.ducklake.changes",
+                json!({ "path": cat, "schema": "main", "table": "t" })
+            ),
+            node("k", "snk.csv", json!({ "path": out, "hasHeader": true, "mode": "overwrite" })),
+        ]),
+        json!([main_edge("e", "c", "k")]),
+    );
+    let r = engine.execute_pipeline_named(&d, "LakeCDCSchema");
+    std::env::remove_var("DUCKLE_WORKSPACE");
+    assert_eq!(r.status, "ok", "cdc with explicit schema failed: {:?}", r.error);
+    assert_eq!(
+        count(&format!("read_csv_auto('{}')", out)),
+        2,
+        "schema-qualified CDC should read the 2 inserts"
+    );
+}
+
+#[test]
+fn duckdb_sink_creates_missing_parent_dir() {
+    // Regression: snk.duckdb ATTACHes its `database` file, and ATTACH does not
+    // create intermediate directories. Writing to a fresh nested folder must be
+    // handled by the engine's pre-run dir creation (ensure_local_sink_dirs),
+    // which now covers the `database` prop, not just `path`.
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let csv = out_path(dir, "in.csv");
+    std::fs::write(&csv, "id,name\n1,a\n2,b\n3,c\n").unwrap();
+    // A nested directory tree that does not exist yet.
+    let db = out_path(dir, "nested/sub/out.duckdb");
+    let d = doc(
+        json!([
+            node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+            node(
+                "k",
+                "snk.duckdb",
+                json!({ "database": db, "tableName": "rows", "mode": "overwrite" })
+            ),
+        ]),
+        json!([main_edge("e", "s", "k")]),
+    );
+    let r = engine.execute_pipeline_named(&d, "DuckSinkMkdir");
+    assert_eq!(r.status, "ok", "duckdb sink to a missing dir failed: {:?}", r.error);
+    assert!(
+        std::path::Path::new(&db).exists(),
+        "duckdb file was not created at the nested path"
+    );
+    let n = duckdb_json(&format!(
+        "ATTACH '{}' AS d (READ_ONLY); SELECT count(*) AS n FROM d.rows;",
+        db
+    ))
+    .first()
+    .and_then(|r| r.get("n"))
+    .and_then(|v| v.as_i64())
+    .unwrap_or(-1);
+    assert_eq!(n, 3, "expected 3 rows written into the nested duckdb sink");
+}
+
+#[test]
 fn run_log_writes_per_pipeline_ndjson() {
     // With DUCKLE_LOG_DIR set, a run appends component-level NDJSON to
     // <dir>/<pipeline name>/runtime.log, including the ctl.log line.

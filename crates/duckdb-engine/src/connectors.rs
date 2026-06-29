@@ -7637,13 +7637,20 @@ impl DuckdbEngine {
             path
         );
         let node_q = plan::quote_ident(&spec.node_id);
-        // Table arg for table_changes() is a string; qualify with the schema
-        // when one is configured (DuckLake defaults to `main`).
-        let table_arg = match &spec.schema {
-            Some(s) if !s.is_empty() => format!("{}.{}", s, spec.table),
-            _ => spec.table.clone(),
-        }
-        .replace('\'', "''");
+        // Read the change feed via the global ducklake_table_changes(catalog,
+        // schema, table, from, to): catalog + schema + table are passed as
+        // separate args so an explicit (or non-default) schema resolves. The
+        // catalog-method form duckle_src.table_changes('schema.table', ...)
+        // mis-parses a schema-qualified name (the table is looked up literally
+        // as "schema.table" and not found), and the schema manifest field
+        // defaults to "main", so any schema-qualified CDC node hit that.
+        let schema = spec
+            .schema
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("main")
+            .replace('\'', "''");
+        let table = spec.table.replace('\'', "''");
 
         // Current snapshot id from the catalog.
         let cur_rows = self.run_rows(
@@ -7676,8 +7683,8 @@ impl DuckdbEngine {
                 format!("CREATE OR REPLACE TABLE {node} AS SELECT NULL::BIGINT AS snapshot_id, NULL::VARCHAR AS change_type LIMIT 0;", node = node_q)
             } else {
                 format!(
-                    "{attach}CREATE OR REPLACE TABLE {node} AS SELECT * FROM duckle_src.table_changes('{tbl}', {cur}, {cur}) WHERE 1=0;",
-                    attach = attach, node = node_q, tbl = table_arg, cur = current,
+                    "{attach}CREATE OR REPLACE TABLE {node} AS SELECT * FROM ducklake_table_changes('duckle_src', '{schema}', '{table}', {cur}, {cur}) WHERE 1=0;",
+                    attach = attach, node = node_q, schema = schema, table = table, cur = current,
                 )
             };
             self.run(Some(db), &empty_sql, false)?;
@@ -7688,10 +7695,11 @@ impl DuckdbEngine {
         }
 
         let materialize = format!(
-            "{attach}CREATE OR REPLACE TABLE {node} AS SELECT * FROM duckle_src.table_changes('{tbl}', {last}, {cur}) WHERE snapshot_id > {last}{type_filter};",
+            "{attach}CREATE OR REPLACE TABLE {node} AS SELECT * FROM ducklake_table_changes('duckle_src', '{schema}', '{table}', {last}, {cur}) WHERE snapshot_id > {last}{type_filter};",
             attach = attach,
             node = node_q,
-            tbl = table_arg,
+            schema = schema,
+            table = table,
             last = last,
             cur = current,
             type_filter = type_filter,
