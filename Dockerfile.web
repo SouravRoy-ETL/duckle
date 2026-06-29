@@ -33,8 +33,10 @@ WORKDIR /app
 #  - protoc: lance's proto codegen (pinned to match local builds).
 #  - clang + libclang: bindgen, pulled transitively (custom-labels) when the
 #    sidecar's crates join the build set.
+#  - unixodbc-dev: the runner links the engine with the teradata (ODBC) feature
+#    on Linux, so the linker needs libodbc (-lodbc) to resolve.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates unzip clang libclang-dev \
+    && apt-get install -y --no-install-recommends curl ca-certificates unzip clang libclang-dev unixodbc-dev \
     && curl -fsSL -o /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-linux-x86_64.zip \
     && unzip -o /tmp/protoc.zip -d /usr/local \
     && rm /tmp/protoc.zip && rm -rf /var/lib/apt/lists/*
@@ -55,9 +57,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:bookworm-slim
 ARG DUCKDB_VERSION=1.5.4
 # python3 powers the code.python UDF (per-row Python transform); curl stays for
-# the container healthcheck.
+# the container healthcheck; libodbc2 is the unixODBC runtime the teradata
+# (ODBC) engine feature dynamically links against.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl unzip python3 \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip python3 libodbc2 \
     && curl -fsSL -o /tmp/duckdb.zip "https://github.com/duckdb/duckdb/releases/download/v${DUCKDB_VERSION}/duckdb_cli-linux-amd64.zip" \
     && unzip /tmp/duckdb.zip -d /usr/local/bin \
     && rm /tmp/duckdb.zip \
