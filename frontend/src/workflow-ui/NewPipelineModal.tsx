@@ -29,7 +29,7 @@ const TEMPLATES: { id: PipelineTemplate; label: string; description: string; ava
     {
         id: 'sample-join-groupby',
         label: 'Sample · Join + Group By',
-        description: 'Join two CSVs and aggregate — uses xf.groupby (not xf.aggregate).',
+        description: 'Join two CSVs and aggregate - uses xf.groupby (not xf.aggregate).',
         available: true,
     },
     {

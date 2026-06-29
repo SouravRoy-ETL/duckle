@@ -236,7 +236,7 @@ export default function Palette() {
                                                         c.summary ?? c.label,
                                                         c.alternateHint,
                                                         badgeLabel
-                                                            ? `(${badgeLabel} — not executable on DuckDB engine yet)`
+                                                            ? `(${badgeLabel} - not executable on DuckDB engine yet)`
                                                             : null,
                                                     ].filter(Boolean);
                                                     return (
