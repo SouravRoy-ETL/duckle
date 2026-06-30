@@ -9061,8 +9061,11 @@ fn src_webhook_collects_inbound_http_requests() {
             if i > 0 {
                 std::thread::sleep(Duration::from_millis(200));
             }
-            // Retry a few times in case the engine isn't bound yet.
-            for _ in 0..50 {
+            // Keep retrying until the engine has bound the port. The window must
+            // outlast a slow engine startup on a loaded CI runner: if the first
+            // POST gives up before the listener is up, that request is lost and
+            // only one row lands (a flake seen on ubuntu CI). 200 x 50ms = 10s.
+            for _ in 0..200 {
                 if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
                     let req = format!(
                         "POST /hook HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
