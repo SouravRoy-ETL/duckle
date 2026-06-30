@@ -10311,6 +10311,49 @@ fn partial_run_does_not_persist_incremental_watermark() {
 }
 
 #[test]
+fn partial_run_returns_preview_rows_for_the_target_node() {
+    // Live preview / "run to here" runs a partial pipeline up to the edited node
+    // and the GUI shows that node's Preview tab from result.preview. So a partial
+    // run MUST return a preview (with rows) for the target node.
+    let _env = env_guard();
+    let engine = engine_or_skip!();
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path();
+    let csv = out_path(ws, "in.csv");
+    std::fs::write(&csv, "id,status\n1,paid\n2,pending\n3,paid\n").unwrap();
+    let pipeline = json!([
+        node("s", "src.csv", json!({ "path": csv, "hasHeader": true })),
+        node("f", "xf.filter", json!({ "predicate": "status = 'paid'" })),
+        node(
+            "k",
+            "snk.csv",
+            json!({ "path": out_path(ws, "out.csv"), "hasHeader": true, "mode": "overwrite" }),
+        ),
+    ]);
+    let edges = json!([main_edge("e1", "s", "f"), main_edge("e2", "f", "k")]);
+
+    let r = engine.execute_pipeline_with_events(
+        &doc(pipeline, edges),
+        Some("f"),
+        Some("LivePrev"),
+        |_| {},
+    );
+    assert_eq!(r.status, "ok", "partial run failed: {:?}", r.error);
+    let ids: Vec<&str> = r.preview.iter().map(|p| p.node_id.as_str()).collect();
+    let target = r
+        .preview
+        .iter()
+        .find(|p| p.node_id == "f")
+        .unwrap_or_else(|| panic!("no preview for target 'f'; got previews for {ids:?}"));
+    assert_eq!(
+        target.rows.len(),
+        2,
+        "target preview should have the 2 filtered rows, got {}",
+        target.rows.len()
+    );
+}
+
+#[test]
 fn batched_view_row_error_is_attributed_to_the_view_not_the_sink() {
     // audit pass-3: in the batched executor a view whose body errors on
     // full-row evaluation (here a failing CAST) used to be reported "ok" -
